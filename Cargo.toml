@@ -1,0 +1,7 @@
+[package]
+name = "mirkat"
+version = "0.1.0"
+authors = ["Jacob Hughes <jacob.hughes@kcl.ac.uk>"]
+
+[dependencies]
+byteorder = "1"
