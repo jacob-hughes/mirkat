@@ -1,5 +1,5 @@
-// Copyright (c) 2018 King's College London
-// created by the Software Development Team <http://soft-dev.org/>
+// Copyright (c) 2018 King's College London created by the Software Development
+// Team <http://soft-dev.org/>
 //
 // The Universal Permissive License (UPL), Version 1.0
 //
@@ -11,10 +11,9 @@
 // unmodified Software as contributed to or provided by such licensor, or (ii)
 // the Larger Works (as defined below), to deal in both
 //
-// (a) the Software, and
-// (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
-// if one is included with the Software (each a "Larger Work" to which the Software
-// is contributed by such licensors),
+// (a) the Software, and (b) any piece of software and/or hardware listed in the
+// lrgrwrks.txt file if one is included with the Software (each a "Larger Work"
+// to which the Software is contributed by such licensors),
 //
 // without restriction, including without limitation the rights to copy, create
 // derivative works of, display, perform, and distribute the Software and make,
@@ -26,7 +25,7 @@
 // notice and either this complete permission notice or at a minimum a reference
 // to the UPL must be included in all copies or substantial portions of the
 // Software.
-
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -37,9 +36,9 @@
 
 use rustc::ty::Ty;
 
-// Stores a value represented as a vector of bytes, along with its type annotation.
-// It's important to keep track of a value's type while it is being evaluated,
-// so that we know how to interpret the bytes.
+// Stores a value represented as a vector of bytes, along with its type
+// annotation. It's important to keep track of a value's type while it is being
+// evaluated, so that we know how to interpret the bytes.
 pub struct TypedVal<'tcx> {
     pub ty: Ty<'tcx>,
     pub val: Vec<u8>,
