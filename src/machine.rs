@@ -182,3 +182,36 @@ impl<'tcx> Machine<'tcx> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mem_alloc_ptr_aligns_block() {
+        let mut m = Memory::new(32);
+        let ptr = m.next_aligned_ptr(15);
+        assert_eq!(ptr, 0);
+
+        // Emulate behaviour of storage
+        m.next_free = 15;
+        let ptr = m.next_aligned_ptr(8);
+        assert_eq!(ptr, 16);
+    }
+
+    #[test]
+    #[should_panic]
+    fn mem_alloc_panics_on_overflow() {
+        let mut m = Memory::new(32);
+        let ptr = m.next_aligned_ptr(100);
+    }
+
+    #[test]
+    fn store_and_read() {
+        let mut m = Memory::new(32);
+        let ptr = m.next_aligned_ptr(15);
+
+        let data = vec![1; 8];
+        m.store(ptr, data.clone());
+        assert_eq!(m.read(ptr, data.len()), data.as_slice());
+    }
+}
