@@ -1,5 +1,5 @@
-// Copyright (c) 2018 King's College London
-// created by the Software Development Team <http://soft-dev.org/>
+// Copyright (c) 2018 King's College London created by the Software Development
+// Team <http://soft-dev.org/>
 //
 // The Universal Permissive License (UPL), Version 1.0
 //
@@ -11,10 +11,9 @@
 // unmodified Software as contributed to or provided by such licensor, or (ii)
 // the Larger Works (as defined below), to deal in both
 //
-// (a) the Software, and
-// (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
-// if one is included with the Software (each a "Larger Work" to which the Software
-// is contributed by such licensors),
+// (a) the Software, and (b) any piece of software and/or hardware listed in the
+// lrgrwrks.txt file if one is included with the Software (each a "Larger Work"
+// to which the Software is contributed by such licensors),
 //
 // without restriction, including without limitation the rights to copy, create
 // derivative works of, display, perform, and distribute the Software and make,
@@ -25,15 +24,13 @@
 // This license is subject to the following condition: The above copyright
 // notice and either this complete permission notice or at a minimum a reference
 // to the UPL must be included in all copies or substantial portions of the
-// Software.
-
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+// Software.  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+// EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+// OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+// ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
 
 use std::collections::HashMap;
 use std::mem::align_of;
@@ -44,14 +41,14 @@ use interp::TypedVal;
 
 #[derive(Debug)]
 pub struct Frame<'tcx> {
-    // Each MIR is a CFG of a single function in Rust, so it makes sense
-    // for this to be in the frame.
     mir: Mir<'tcx>,
+    // Each MIR is a CFG of a single function in Rust, so it makes sense for
+    // this to be in the frame.
 
     // FIXME: Hacky... I can't find a way to actually access the private u32
-    // inside the `Local` tuple struct. `Local` does  implement the Hashable
-    // and PartialEQ trait however, so for  now it might just work to to use it
-    // as the key
+    // inside the `Local` tuple struct. `Local` does  implement the Hashable and
+    // PartialEQ trait however, so for now it might just work to to use it as
+    // the key
     locals: HashMap<Local, Vec<u8>>
 }
 
@@ -87,10 +84,10 @@ pub struct Memory {
     // properly is the responsibility of those interfacing with it.
     memory: Vec<u8>,
 
-    // Points to the last position in memory which is actually in use.
-    // Do not use directly to get a fresh ptr into memory.
-    // Instead use `next_aligned_ptr` method for a fresh correctly aligned ptr
-    // into memory for the target architecture.
+    // Points to the last position in memory which is actually in use.  Do not
+    // use directly to get a fresh ptr into memory.  Instead use
+    // `next_aligned_ptr` method for a fresh correctly aligned ptr into memory
+    // for the target architecture.
     next_free: usize,
 
     target_alignment: usize,
@@ -140,8 +137,8 @@ impl Memory {
     }
 }
 
-/// A simple stack frame based virtual machine which is used to interpret
-/// Rust's MIR.
+/// A simple stack frame based virtual machine which is used to interpret MIR
+/// instructions.
 pub struct Machine<'tcx> {
     stack: Vec<Frame<'tcx>>,
     memory: Memory,
