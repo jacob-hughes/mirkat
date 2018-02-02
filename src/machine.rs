@@ -36,14 +36,15 @@ use std::collections::HashMap;
 use std::mem::align_of;
 
 use rustc::mir::{Mir, Local};
+use rustc::ty::TyCtxt;
 
 use interp::TypedVal;
 
 #[derive(Debug)]
 pub struct Frame<'tcx> {
-    mir: Mir<'tcx>,
-    // Each MIR is a CFG of a single function in Rust, so it makes sense for
-    // this to be in the frame.
+    /// Each MIR is a CFG of a single function in Rust, so it makes sense to
+    /// store a reference to this in the frame.
+    pub mir: &'tcx Mir<'tcx>,
 
     // FIXME: Hacky... I can't find a way to actually access the private u32
     // inside the `Local` tuple struct. `Local` does  implement the Hashable and
@@ -53,7 +54,7 @@ pub struct Frame<'tcx> {
 }
 
 impl<'tcx> Frame<'tcx> {
-    fn new(mir: Mir<'tcx>) -> Frame {
+    pub fn new(mir: &'tcx Mir<'tcx>) -> Frame<'tcx> {
         Frame {
             locals: HashMap::new(),
             mir:    mir
@@ -69,13 +70,12 @@ impl<'tcx> Frame<'tcx> {
     }
 }
 
-// Represents a pointer into some kind of memory
-// TODO: Extend to work with static constructs
-enum Address {
-    Heap(usize), // pointer to offset in memory
+/// Represents a pointer into some kind of memory.
+// TODO: Extend to work with static constructs.
+pub enum Address {
+    Heap(usize), // pointer to offset in memory.
     Local(Local)
 }
-
 
 pub struct Memory {
     // Memory is a simple vector of bytes whose size is parameterized at
@@ -103,8 +103,8 @@ impl Memory {
         }
     }
 
-    // Returns a pointer to next free block of memory of size n. Begins at index
-    // of the heap pointer.
+    /// Returns a pointer to next free block of memory of size n. Begins at index
+    /// of the heap pointer.
     //
     // TODO: There is no free list so once a block of memory is allocated it is
     // not yet possible to free it.
@@ -130,7 +130,6 @@ impl Memory {
         self.next_free = ptr
     }
 
-    // TODO: It would be nice not to have to provide the size each time.
     fn read(&self, ptr: usize, size: usize) -> &[u8] {
         let end = ptr + size;
         &self.memory[ptr..end]
@@ -139,16 +138,18 @@ impl Memory {
 
 /// A simple stack frame based virtual machine which is used to interpret MIR
 /// instructions.
-pub struct Machine<'tcx> {
+pub struct Machine<'a, 'tcx: 'a> {
     stack: Vec<Frame<'tcx>>,
     memory: Memory,
+    pub tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
-impl<'tcx> Machine<'tcx> {
-    pub fn new(memory: Memory) -> Machine<'tcx> {
+impl<'a, 'tcx> Machine<'a, 'tcx> {
+    pub fn new(memory: Memory, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Machine<'a, 'tcx> {
         Machine {
             stack: vec![],
             memory: memory,
+            tcx: tcx
         }
     }
 
@@ -160,7 +161,16 @@ impl<'tcx> Machine<'tcx> {
         self.stack.last_mut().unwrap()
     }
 
-    fn store(&mut self, tv: TypedVal, dest: Address) {
+    pub fn push(&mut self, frame: Frame<'tcx>) {
+        self.stack.push(frame)
+    }
+
+    pub fn pop(&mut self) -> Frame<'tcx> {
+        self.stack.pop()
+            .expect("Popped from empty stack")
+    }
+
+    pub fn store(&mut self, tv: TypedVal, dest: Address) {
         match dest {
             Address::Local(key) => {
                 self.cur_frame_mut().set_local(key, tv.val)
@@ -171,7 +181,7 @@ impl<'tcx> Machine<'tcx> {
         }
     }
 
-    fn read(&self, dest: Address, size: usize) -> &[u8] {
+    pub fn read(&self, dest: Address, size: usize) -> &[u8] {
         match dest {
             Address::Local(key) => {
                 self.cur_frame().get_local(key)
