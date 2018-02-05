@@ -36,36 +36,50 @@ use std::collections::HashMap;
 use std::mem::align_of;
 
 use rustc::mir::{Mir, Local};
+use rustc_data_structures::indexed_vec::IndexVec;
 
 use interp::TypedVal;
 
 #[derive(Debug)]
 pub struct Frame<'tcx> {
+    /// Each MIR is a CFG of a single function in Rust, so it makes sense for
+    /// this to be in the frame.
     mir: Mir<'tcx>,
-    // Each MIR is a CFG of a single function in Rust, so it makes sense for
-    // this to be in the frame.
 
-    // FIXME: Hacky... I can't find a way to actually access the private u32
-    // inside the `Local` tuple struct. `Local` does  implement the Hashable and
-    // PartialEQ trait however, so for now it might just work to to use it as
-    // the key
-    locals: HashMap<Local, Vec<u8>>
+    /// We make this optional for the purpose of optimisation. Some functions do
+    /// not need a locals field (e.g some closures and 0-arg functions).
+    /// Functions that do require a local env can have it explicitly
+    /// instantiated lazily when required.
+    locals: Option<IndexVec<Local, Vec<u8>>>
 }
 
 impl<'tcx> Frame<'tcx> {
     fn new(mir: Mir<'tcx>) -> Frame {
         Frame {
-            locals: HashMap::new(),
+            locals: None,
             mir:    mir
         }
     }
 
-    fn set_local(&mut self, local: Local, val: Vec<u8>) {
-        self.locals.insert(local, val);
+    fn init_locals(&mut self) {
+        self.locals = Some(IndexVec::new());
     }
 
-    fn get_local(&self, local: Local) -> &Vec<u8> {
-        &self.locals[&local]
+    fn set_local(&mut self, local: Local, val: Vec<u8>) {
+        match self.locals {
+            Some(ref mut env) => env[local] = val,
+            None => {
+                self.init_locals();
+                self.set_local(local, val)
+            }
+        }
+    }
+
+    fn get_local(&self, local: Local) -> &[u8] {
+        match self.locals {
+            Some(ref env) => env[local].as_slice(),
+            None => panic!("Locals not initialized")
+        }
     }
 }
 
