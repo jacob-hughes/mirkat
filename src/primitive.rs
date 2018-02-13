@@ -45,35 +45,8 @@ use syntax::ast::{IntTy, UintTy};
 use interp::TypedVal;
 use machine::Machine;
 
-/// An operand's value can always be determined without needing to temporarily
-/// save values to a stack. This is because of the recursive nature of the MIR.
-/// An operand will only ever return a primitive value or a pointer.
-pub fn eval_operand<'a,'tcx>(operand: &Operand<'tcx>,
-                             vm: &mut Machine<'a, 'tcx>)
-                             -> TypedVal<'tcx> {
-    let ty = operand.ty(vm.cur_frame().mir, vm.tcx);
-    match *operand {
-        Operand::Copy(ref place) |
-        Operand::Move(ref place) => {
-            unimplemented!()
-        }
-        Operand::Constant(ref constant) => {
-            let Constant {ref literal, ..} = **constant;
-            let val = match *literal {
-                Literal::Value { ref value } => value.val.to_bytes(),
-                Literal::Promoted { index } => {
-                    unimplemented!()
-                }
-            };
-            return TypedVal {
-                val,
-                ty
-            }
-        }
-    }
-}
 
-trait ByteCast {
+pub trait ByteCast {
     type T;
 
     fn to_bytes(&self) -> Vec<u8>;
