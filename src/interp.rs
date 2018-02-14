@@ -34,7 +34,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use std;
+use std::process::exit;
 use rustc::ty;
 use rustc::ty::{Ty, TyCtxt};
 use rustc::hir::def_id::DefId;
@@ -63,8 +63,8 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// Evaluates a function call, pushing a new stack frame.
     pub fn eval_fn_call(&mut self,
                         def_id: DefId,
-                        destination: Option<(Place<'tcx>, BasicBlock)>) {
-        self.push_frame(def_id, destination);
+                        ret_addr: Option<BasicBlock>) {
+        self.push_frame(def_id, ret_addr);
         self.eval_basic_block(START_BLOCK)
     }
 
@@ -144,6 +144,16 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
             TerminatorKind::Goto { target } => {
                 self.eval_basic_block(target)
             }
+            TerminatorKind::Return =>  {
+                // Move the ret_addr, otherwise we borrow twice.
+                let ret_addr = self.cur_frame().ret_addr;
+                match ret_addr {
+                    Some(bb) => {
+                        self.eval_basic_block(bb)
+                    },
+                    None => exit(0),
+                }
+            },
             _ => unimplemented!()
         }
     }
