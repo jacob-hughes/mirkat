@@ -117,6 +117,20 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 };
                 self.store(tyval, dest);
             },
+            Rvalue::Aggregate(ref kind, ref ops) => {
+                match **kind {
+                    AggregateKind::Tuple => {
+                        // XXX: Tuple layout needs some proper thought, and
+                        // should be upcoming in the next PR, so we handle the
+                        // empty tuple explicitly as this is the bottom type in
+                        // Rust.
+                        if ops.len() != 0 {
+                            unimplemented!()
+                        }
+                    },
+                    _ => unimplemented!()
+                }
+            },
             _ => unimplemented!()
         }
     }
