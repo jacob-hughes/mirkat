@@ -36,7 +36,7 @@
 
 use std::process::exit;
 use rustc::ty;
-use rustc::ty::{Ty, TyCtxt};
+use rustc::ty::{Ty, TyCtxt, TypeVariants};
 use rustc::hir::def_id::DefId;
 use rustc::mir::{
     START_BLOCK, Mir, BasicBlock, BasicBlockData, Statement, StatementKind,
@@ -63,8 +63,10 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// Evaluates a function call, pushing a new stack frame.
     pub fn eval_fn_call(&mut self,
                         def_id: DefId,
-                        ret_addr: Option<BasicBlock>) {
-        self.push_frame(def_id, ret_addr);
+                        args: Vec<TypedVal<'tcx>>,
+                        ret_val: Option<Address>,
+                        ret_block: Option<BasicBlock>) {
+        self.push_frame(def_id, args, ret_val, ret_block);
         self.eval_basic_block(START_BLOCK)
     }
 
@@ -73,7 +75,10 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// list and execute each one in order.
     fn eval_basic_block(&mut self,
                         block: BasicBlock) {
-        let basic_block_data = self.cur_frame().mir.basic_blocks().get(block).unwrap();
+        let basic_block_data = self.cur_frame()
+                               .mir.basic_blocks()
+                               .get(block)
+                               .unwrap();
         for statement in &basic_block_data.statements {
             self.eval_statement(block, statement)
         }
@@ -145,15 +150,44 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 self.eval_basic_block(target)
             }
             TerminatorKind::Return =>  {
-                // Move the ret_addr, otherwise we borrow twice.
-                let ret_addr = self.cur_frame().ret_addr;
-                match ret_addr {
+                // Move the ret_block, otherwise we borrow twice.
+                let ret_block = self.cur_frame().ret_block;
+                self.pop_frame();
+                match ret_block {
                     Some(bb) => {
                         self.eval_basic_block(bb)
                     },
                     None => exit(0),
                 }
             },
+            TerminatorKind::Call {
+                ref func,
+                ref args,
+                ref destination,
+                ref cleanup
+            } => {
+                let (ret_val, ret_block) = match *destination {
+                    Some((ref place, bb)) => (Some(self.eval_place(place)), Some(bb)),
+                    None => (None, None)
+                };
+                let func = self.eval_operand(func);
+                let fn_def = match func.ty.sty {
+                    ty::TyFnDef(def_id, substs) => {
+                        ty::Instance::resolve(
+                            self.tcx,
+                            self.tcx.param_env(def_id),
+                            def_id,
+                            substs,
+                        ).unwrap()
+                    },
+                    _ => unimplemented!()
+                };
+
+                let args: Vec<TypedVal> = args.iter()
+                                              .map(|arg| self.eval_operand(arg))
+                                              .collect();
+                self.eval_fn_call(fn_def.def_id(), args, ret_val, ret_block)
+            }
             _ => unimplemented!()
         }
     }
@@ -180,7 +214,12 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         match *operand {
             Operand::Copy(ref place) |
             Operand::Move(ref place) => {
-                unimplemented!()
+                let dest = self.eval_place(place);
+                let size = size_of(ty);
+                TypedVal {
+                    val: self.read(dest, size).to_vec(),
+                    ty: ty
+                }
             }
             Operand::Constant(ref constant) => {
                 let Constant {ref literal, ..} = **constant;
@@ -199,12 +238,28 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     }
 }
 
+/// Returns the exact number of bytes required to store a given type. Useful for
+/// calling before reading bytes from memory.
+pub fn size_of<'tcx>(ty: Ty<'tcx>) -> usize {
+    use::syntax::ast::IntTy;
+    match ty.sty {
+        TypeVariants::TyInt(int_ty) => match int_ty {
+            IntTy::I8 => 8,
+            IntTy::I16 => 16,
+            IntTy::I32 => 32,
+            IntTy::I64 => 64,
+            _ => unimplemented!(),
+        },
+        _ => unimplemented!(),
+    }
+}
+
 /// Builds a VM and starts interpretation from the given MIR function, this is
 /// normally the main method.
 pub fn entry_point<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                              def_id: DefId) {
     let m = machine::Memory::new(MEMORY_CAPACITY);
     let mut vm = Machine::new(m, tcx);
-    vm.eval_fn_call(def_id, None);
+    vm.eval_fn_call(def_id, vec![], None, None);
 }
 
