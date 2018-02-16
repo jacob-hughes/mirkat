@@ -3,5 +3,13 @@ name = "mirkat"
 version = "0.1.0"
 authors = ["Jacob Hughes <jacob.hughes@kcl.ac.uk>"]
 
+[lib]
+name = "mirkat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mirkat"
+path = "src/mirkat.rs"
+
 [dependencies]
 byteorder = "1"

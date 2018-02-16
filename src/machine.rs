@@ -32,41 +32,63 @@
 // ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::collections::HashMap;
 use std::mem::align_of;
 
-use rustc::mir::{Mir, Local};
-use rustc::ty::TyCtxt;
+use rustc::hir::def_id::DefId;
+use rustc::mir::{Mir, Local, BasicBlock, Place};
+use rustc::ty::{TyCtxt, Instance, InstanceDef};
+use rustc_data_structures::indexed_vec::IndexVec;
 
 use interp::TypedVal;
 
 #[derive(Debug)]
 pub struct Frame<'tcx> {
+    /// The unique identifier for the function definition being invoked by this
+    /// stackframe
+    pub def_id: DefId,
+
     /// Each MIR is a CFG of a single function in Rust, so it makes sense to
     /// store a reference to this in the frame.
     pub mir: &'tcx Mir<'tcx>,
 
-    // FIXME: Hacky... I can't find a way to actually access the private u32
-    // inside the `Local` tuple struct. `Local` does  implement the Hashable and
-    // PartialEQ trait however, so for now it might just work to to use it as
-    // the key
-    locals: HashMap<Local, Vec<u8>>
+    /// Where execution should jump to after returning from the stackframe.
+    /// None if stackframe is for a diverging or main functions as these do not
+    /// return to any particular address.
+    pub ret_addr: Option<BasicBlock>,
+
+    /// We make this optional for the purpose of optimisation. Some functions do
+    /// not need a locals field (e.g some closures and 0-arg functions).
+    /// Functions that do require a local env can have it explicitly
+    /// instantiated lazily when required.
+    locals: IndexVec<Local, Option<Vec<u8>>>
 }
 
 impl<'tcx> Frame<'tcx> {
-    pub fn new(mir: &'tcx Mir<'tcx>) -> Frame<'tcx> {
+    pub fn new(def_id: DefId,
+               mir: &'tcx Mir<'tcx>,
+               ret_addr: Option<BasicBlock>)
+               -> Frame<'tcx> {
+        let size = mir.local_decls.len();
+        let mut locals:IndexVec<Local, Option<Vec<u8>>> = IndexVec::with_capacity(size);
+        locals.extend(vec![None; size]);
+
         Frame {
-            locals: HashMap::new(),
-            mir:    mir
+            def_id: def_id,
+            mir: mir,
+            ret_addr: ret_addr,
+            locals: locals,
         }
     }
 
     fn set_local(&mut self, local: Local, val: Vec<u8>) {
-        self.locals.insert(local, val);
+        self.locals[local] = Some(val)
     }
 
-    fn get_local(&self, local: Local) -> &Vec<u8> {
-        &self.locals[&local]
+    fn get_local(&self, local: Local) -> &[u8] {
+        match self.locals[local] {
+            Some(ref v) => v.as_slice(),
+            None => panic!("Local does not exist")
+        }
     }
 }
 
@@ -153,6 +175,17 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         }
     }
 
+    /// Each MIR is specific to a function definition. So it will be necessary
+    /// for function invocations to call this to get the relevant mir reference.
+    pub fn load_mir(&self, instance: InstanceDef<'tcx>) -> &'tcx Mir<'tcx> {
+        match instance {
+            InstanceDef::Item(def_id) => {
+                self.tcx.maybe_optimized_mir(def_id).unwrap()
+            },
+            _ => self.tcx.instance_mir(instance),
+        }
+    }
+
     pub fn cur_frame(&self) -> &Frame<'tcx> {
         self.stack.last().unwrap()
     }
@@ -161,7 +194,12 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         self.stack.last_mut().unwrap()
     }
 
-    pub fn push(&mut self, frame: Frame<'tcx>) {
+    pub fn push_frame(&mut self,
+                      def_id: DefId,
+                      ret_addr: Option<BasicBlock>) {
+        let def = Instance::mono(self.tcx, def_id).def;
+        let mir = self.load_mir(def);
+        let frame = Frame::new(def_id, mir, ret_addr);
         self.stack.push(frame)
     }
 

@@ -43,14 +43,12 @@ extern crate byteorder;
 extern crate rustc_const_math;
 extern crate mirkat;
 
-use rustc_driver::{driver, CompilerCalls};
-use rustc::ty::TyCtxt;
-use rustc::session::Session;
-use std::process;
-use rustc::hir::def_id::DefId;
-pub use rustc_const_math::ConstInt;
+use std::{env, process};
 
-use mirkat::machine::{Machine, Memory};
+use self::rustc_driver::{driver, CompilerCalls};
+use rustc::session::Session;
+
+use mirkat::interp::entry_point;
 
 /// This struct is required by the rustc API in order to implement traits which
 /// are used to hook into the compiler and customise the build pipeline. In
@@ -74,6 +72,7 @@ impl<'a> CompilerCalls<'a> for MirkatCompilerCalls {
                 let entry_def_id = tcx.hir.local_def_id(entry_node_id);
                 let _start_wrapper = tcx.lang_items().start_fn().and_then(|start_fn| {
                     if tcx.is_mir_available(start_fn) {
+                        entry_point(tcx, entry_def_id);
                         Some(start_fn)
                     } else {
                         None
@@ -93,7 +92,7 @@ impl<'a> CompilerCalls<'a> for MirkatCompilerCalls {
 /// complains if one isn't found.
 /// https://github.com/solson/miri/blob/919604e1ead8294c8ca14f101be4380ea1ea370c/miri/bin/miri.rs#L228
 fn find_sysroot() -> String {
-    if let Ok(sysroot) = std::env::var("MIRKAT_SYSROOT") {
+    if let Ok(sysroot) = env::var("MIRKAT_SYSROOT") {
         return sysroot;
     }
 
@@ -114,7 +113,7 @@ fn find_sysroot() -> String {
 
 
 fn main() {
-    let mut args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
 
     let sysroot_flag = String::from("--sysroot");
     if !args.contains(&sysroot_flag) {
@@ -122,11 +121,6 @@ fn main() {
         args.push(find_sysroot());
     }
     let mut compiler_calls = MirkatCompilerCalls{};
-    match rustc_driver::run_compiler(&args, &mut compiler_calls, None, None) {
-        (Ok(_), _) => {
-            process::exit(0)
-        }
-        (Err(_code), _) => process::exit(1),
-    }
+    rustc_driver::run_compiler(&args, &mut compiler_calls, None, None);
 }
 
