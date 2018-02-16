@@ -35,25 +35,11 @@
 extern crate mirkat;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Stdio, Command, Output};
 
 const STATUS_CODE_OK: i32 = 0;
 const COMPILE_PASS_DIR: &str = "./tests/compile_pass";
-
-/// Invokes Mirkat when given a path to a valid Rust program. Compares the
-/// expected return code against that returned from Mirkat. This is surprisingly
-/// effective at catching bugs in Mirkat. It's not uncommon that when things go
-/// wrong, Mirkat blows up catastrophically.
-fn test_prog(path: &Path, status_code: i32) -> bool {
-    eprint!("test {:?} ... ", path.file_name().unwrap());
-    if status_code == run_prog(path) {
-        eprintln!("ok");
-        true
-    } else {
-        eprintln!("FAILED");
-        false
-    }
-}
+const MIRKAT_BIN: &str = "target/debug/mirkat";
 
 fn get_sysroot() -> PathBuf {
     let sysroot = std::env::var("MIRKAT_SYSROOT").unwrap_or_else(|_| {
@@ -68,12 +54,37 @@ fn get_sysroot() -> PathBuf {
     PathBuf::from(sysroot.trim())
 }
 
-fn run_prog(path: &Path) -> i32 {
-    let status = Command::new("target/debug/mirkat")
-                    .arg(path)
-                    .status()
-                    .expect("mirkat bin not found");
-    status.code().unwrap()
+/// Invokes Mirkat when given a path to a valid Rust program. Compares the
+/// expected return code against that returned from Mirkat. This is surprisingly
+/// effective at catching bugs in Mirkat. It's not uncommon that when things go
+/// wrong, Mirkat blows up catastrophically.
+fn test_prog(path: &Path, expected_code: i32) -> Result<(), Vec<u8>> {
+    let out = run_prog(path);
+
+    if out.status.code().unwrap() == expected_code {
+        Ok(())
+    } else {
+        Err(out.stderr)
+    }
+}
+
+/// If a test fails, we want to display the stderr from running it. If we don't
+/// handle this nicely though, it's hard to see the wood for the trees.
+fn fmt_err(test_name: &str, stderr: &Vec<u8>) {
+    eprintln!("=== {:?} error: ===", test_name);
+    eprintln!("");
+    let error = std::str::from_utf8(stderr)
+        .expect("Error reading stderr from test into UTF-8 string");
+    eprintln!("{}", error)
+}
+
+fn run_prog(path: &Path) -> Output {
+    let child = Command::new(MIRKAT_BIN.to_string())
+                .arg(path)
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 //  Having tests run inside a loop like this as part of a single integration
@@ -81,13 +92,30 @@ fn run_prog(path: &Path) -> i32 {
 //  framework.
 #[test]
 fn run_pass() {
-    let paths = fs::read_dir(COMPILE_PASS_DIR).unwrap();
-    let mut passed = true;
-
-    for path in paths {
-        if !test_prog(&path.unwrap().path(), STATUS_CODE_OK) {
-            passed = false;
+    let entries = fs::read_dir(COMPILE_PASS_DIR).unwrap();
+    let mut errors: Vec<(String, Vec<u8>)> = vec![];
+    for entry in entries {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            let test_name = path.file_name()
+                                .unwrap()
+                                .to_str()
+                                .unwrap()
+                                .to_string();
+            eprint!("test {:?} ... ", &test_name);
+            match test_prog(&path, STATUS_CODE_OK) {
+                Ok(_) => eprintln!("ok"),
+                Err(stderr) => {
+                    eprintln!("FAIL");
+                    errors.push((test_name, stderr))
+                }
+            }
         }
     }
-    assert!(passed)
+
+    eprintln!();
+    for &(ref name, ref stderr) in errors.iter() {
+        fmt_err(name, stderr)
+    }
+    assert_eq!(errors.len(), 0);
 }
