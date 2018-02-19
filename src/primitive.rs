@@ -60,7 +60,8 @@ impl<'tcx> ByteCast for ConstVal<'tcx> {
     fn to_bytes(&self) -> Vec<u8> {
         match *self {
             ConstVal::Integral(ref ci) => ci.to_bytes(),
-            _ => unimplemented!()
+            ConstVal::Function(def_id, substs) => vec![], // Funcs are zero-sized
+            _ => unimplemented!("{:?}", self)
         }
     }
 

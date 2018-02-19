@@ -51,10 +51,16 @@ pub struct Frame<'tcx> {
     /// store a reference to this in the frame.
     pub mir: &'tcx Mir<'tcx>,
 
+    /// Address in memory where the return value should be stored.
+    /// We do not name this Return Address to avoid confusion with the Return
+    /// instruction, which in compiler terminology is commonly referred to as
+    /// the RA.
+    pub ret_val: Option<Address>,
+
     /// Where execution should jump to after returning from the stackframe.
     /// None if stackframe is for a diverging or main functions as these do not
     /// return to any particular address.
-    pub ret_addr: Option<BasicBlock>,
+    pub ret_block: Option<BasicBlock>,
 
     /// We make this optional for the purpose of optimisation. Some functions do
     /// not need a locals field (e.g some closures and 0-arg functions).
@@ -66,17 +72,17 @@ pub struct Frame<'tcx> {
 impl<'tcx> Frame<'tcx> {
     pub fn new(def_id: DefId,
                mir: &'tcx Mir<'tcx>,
-               ret_addr: Option<BasicBlock>)
-               -> Frame<'tcx> {
-        let size = mir.local_decls.len();
-        let mut locals:IndexVec<Local, Option<Vec<u8>>> = IndexVec::with_capacity(size);
-        locals.extend(vec![None; size]);
+               locals: IndexVec<Local,Option<Vec<u8>>>,
+               ret_val: Option<Address>,
+               ret_block: Option<BasicBlock>)
+               -> Self {
 
         Frame {
             def_id: def_id,
             mir: mir,
-            ret_addr: ret_addr,
             locals: locals,
+            ret_val: ret_val,
+            ret_block: ret_block,
         }
     }
 
@@ -94,6 +100,7 @@ impl<'tcx> Frame<'tcx> {
 
 /// Represents a pointer into some kind of memory.
 // TODO: Extend to work with static constructs.
+#[derive(Debug)]
 pub enum Address {
     Heap(usize), // pointer to offset in memory.
     Local(Local)
@@ -196,14 +203,29 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
 
     pub fn push_frame(&mut self,
                       def_id: DefId,
-                      ret_addr: Option<BasicBlock>) {
+                      mut args: Vec<TypedVal<'tcx>>,
+                      ret_val: Option<Address>,
+                      ret_block: Option<BasicBlock>){
         let def = Instance::mono(self.tcx, def_id).def;
         let mir = self.load_mir(def);
-        let frame = Frame::new(def_id, mir, ret_addr);
+
+        // Initialise locals
+        let size = mir.local_decls.len();
+        let mut tmp_locals = vec![None; size];
+        for i in (0..mir.arg_count).rev() {
+            // Reverse order is an optimisation. Popping means that we
+            // don't shift the vec each time after a remove
+            let arg = args.pop().unwrap().val;
+            tmp_locals[i+1] = Some(arg); // +1 because of ret val as first index
+        }
+        let mut locals: IndexVec<Local, Option<Vec<u8>>> = IndexVec::with_capacity(size);
+        locals.extend(tmp_locals);
+
+        let frame = Frame::new(def_id, mir, locals, ret_val, ret_block);
         self.stack.push(frame)
     }
 
-    pub fn pop(&mut self) -> Frame<'tcx> {
+    pub fn pop_frame(&mut self) -> Frame<'tcx> {
         self.stack.pop()
             .expect("Popped from empty stack")
     }
