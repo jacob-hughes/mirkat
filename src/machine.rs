@@ -39,7 +39,7 @@ use rustc::mir::{Mir, Local, BasicBlock, Place};
 use rustc::ty::{TyCtxt, Instance, InstanceDef};
 use rustc_data_structures::indexed_vec::IndexVec;
 
-use interp::TypedVal;
+use interp::TyVal;
 
 #[derive(Debug)]
 pub struct Frame<'tcx> {
@@ -203,7 +203,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
 
     pub fn push_frame(&mut self,
                       def_id: DefId,
-                      mut args: Vec<TypedVal<'tcx>>,
+                      mut args: Vec<TyVal<'tcx>>,
                       ret_val: Option<Address>,
                       ret_block: Option<BasicBlock>){
         let def = Instance::mono(self.tcx, def_id).def;
@@ -215,7 +215,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         for i in (0..mir.arg_count).rev() {
             // Reverse order is an optimisation. Popping means that we
             // don't shift the vec each time after a remove
-            let arg = args.pop().unwrap().val;
+            let arg = args.pop().unwrap().to_bytes();
             tmp_locals[i+1] = Some(arg); // +1 because of ret val as first index
         }
         let mut locals: IndexVec<Local, Option<Vec<u8>>> = IndexVec::with_capacity(size);
@@ -230,13 +230,13 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
             .expect("Popped from empty stack")
     }
 
-    pub fn store(&mut self, tv: TypedVal, dest: Address) {
+    pub fn store(&mut self, tv: TyVal<'tcx>, dest: Address) {
         match dest {
             Address::Local(key) => {
-                self.cur_frame_mut().set_local(key, tv.val)
+                self.cur_frame_mut().set_local(key, tv.to_bytes())
             },
             Address::Heap(ptr) =>  {
-                self.memory.store(ptr, tv.val)
+                self.memory.store(ptr, tv.to_bytes())
             }
         }
     }

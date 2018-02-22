@@ -34,36 +34,88 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use byteorder::{ByteOrder, LittleEndian};
 use std::process::exit;
 use rustc::ty;
 use rustc::ty::{Ty, TyCtxt, TypeVariants};
 use rustc::hir::def_id::DefId;
+use rustc::middle::const_val::ConstVal;
 use rustc::mir::{
     START_BLOCK, Mir, BasicBlock, BasicBlockData, Statement, StatementKind,
     Rvalue, Place, Terminator, TerminatorKind, AggregateKind, Operand, Constant,
-    Literal
+    Literal, BinOp
 };
+use syntax::ast::IntTy;
 
 use machine;
 use machine::{Machine, Address};
-use primitive::ByteCast;
 
 const MEMORY_CAPACITY: usize = 1024; // in Bytes.
 
-/// Stores a value represented as a vector of bytes, along with its type
-/// annotation. It's important to keep track of a value's type while it is
-/// being evaluated, so that we know how to interpret the bytes.
 #[derive(Debug, Clone)]
-pub struct TypedVal<'tcx> {
-    pub ty: Ty<'tcx>,
-    pub val: Vec<u8>,
+pub enum Value {
+    Int(u128),
+    Ref(usize), // a Rust ptr
+    None,
+}
+
+/// A Rust MIR value and its type. Used to help de/serialize values to bytes for
+/// storing in memory.
+#[derive(Debug, Clone)]
+pub struct TyVal<'tcx> {
+    ty: Ty<'tcx>,
+    val: Value,
+}
+
+impl<'tcx> TyVal<'tcx> {
+    pub fn new(ty: Ty<'tcx>, val: Value) -> Self {
+        Self {
+            ty: ty,
+            val: val
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self.ty.sty {
+            TypeVariants::TyInt(int_ty) => {
+                let val = match self.val {
+                    Value::Int(i) => i,
+                    _ => panic!("Mismatched Types")
+                };
+
+                match int_ty {
+                    IntTy::I32 => {
+                        let mut buf = [0;4];
+                        LittleEndian::write_i32(&mut buf, val as i32);
+                        return buf.to_vec();
+                    },
+                    _ => unimplemented!()
+                }
+            },
+            _ => unimplemented!()
+        }
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>, ty: Ty<'tcx>) -> Self {
+        match ty.sty {
+            TypeVariants::TyInt(int_ty) => match int_ty {
+                IntTy::I32 => {
+                    let v = LittleEndian::read_i32(bytes.as_slice());
+                    let val = Value::Int(v as u128);
+                    return TyVal::new(ty, val);
+                },
+                _ => unimplemented!()
+            },
+            _ => unimplemented!()
+        }
+    }
 }
 
 impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// Evaluates a function call, pushing a new stack frame.
     pub fn eval_fn_call(&mut self,
                         def_id: DefId,
-                        args: Vec<TypedVal<'tcx>>,
+                        args: Vec<TyVal<'tcx>>,
                         ret_val: Option<Address>,
                         ret_block: Option<BasicBlock>) {
         self.push_frame(def_id, args, ret_val, ret_block);
@@ -116,11 +168,8 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         match *rvalue {
             Rvalue::Use(ref operand) => {
                 let val = self.eval_operand(operand).val;
-                let tyval = TypedVal {
-                    ty: dest_ty,
-                    val: val
-                };
-                self.store(tyval, dest);
+                let tv = TyVal::new(dest_ty, val);
+                self.store(tv, dest);
             },
             Rvalue::Aggregate(ref kind, ref ops) => {
                 match **kind {
@@ -183,9 +232,9 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                     _ => unimplemented!()
                 };
 
-                let args: Vec<TypedVal> = args.iter()
-                                              .map(|arg| self.eval_operand(arg))
-                                              .collect();
+                let args: Vec<TyVal> = args.iter()
+                    .map(|arg| self.eval_operand(arg))
+                    .collect();
                 self.eval_fn_call(fn_def.def_id(), args, ret_val, ret_block)
             }
             _ => unimplemented!()
@@ -209,31 +258,37 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// An operand will only ever return a primitive value or a pointer.
     fn eval_operand(&mut self,
                     operand: &Operand<'tcx>)
-                    -> TypedVal<'tcx> {
+                    -> TyVal<'tcx> {
         let ty = operand.ty(self.cur_frame().mir, self.tcx);
         match *operand {
             Operand::Copy(ref place) |
             Operand::Move(ref place) => {
                 let dest = self.eval_place(place);
                 let size = size_of(ty);
-                TypedVal {
-                    val: self.read(dest, size).to_vec(),
-                    ty: ty
-                }
+                let bytes = self.read(dest, size).to_vec();
+                TyVal::from_bytes(bytes, ty)
             }
             Operand::Constant(ref constant) => {
-                let Constant {ref literal, ..} = **constant;
-                let val = match *literal {
-                    Literal::Value { ref value } => value.val.to_bytes(),
+                let val: Value;
+                match constant.literal {
+                    Literal::Value { ref value } => {
+                        match value.val {
+                            ConstVal::Integral(int) => {
+                                val = Value::Int(int.to_u128().unwrap())
+                            },
+                            ConstVal::Function(def_if, substs) => {
+                                val = Value::None
+                            }
+                            _ => unimplemented!("{:?}", value.val)
+                        }
+                    },
                     Literal::Promoted { index } => {
                         unimplemented!()
                     }
                 };
-                return TypedVal {
-                    val,
-                    ty
-                }
-            }
+                TyVal::new(ty, val)
+            },
+            _ => unimplemented!()
         }
     }
 }

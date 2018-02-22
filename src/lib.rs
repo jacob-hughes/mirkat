@@ -34,7 +34,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#![feature(rustc_private, link_args)]
+#![feature(rustc_private, link_args, i128_type)]
 extern crate rustc;
 extern crate rustc_const_math;
 extern crate rustc_data_structures;
@@ -43,4 +43,3 @@ extern crate byteorder;
 
 pub mod interp;
 pub mod machine;
-pub mod primitive;
