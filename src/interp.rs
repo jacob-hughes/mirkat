@@ -55,6 +55,7 @@ const MEMORY_CAPACITY: usize = 1024; // in Bytes.
 #[derive(Debug, Clone)]
 pub enum Value {
     Int(u128),
+    Bool(bool),
     Ref(usize), // a Rust ptr
     None,
 }
@@ -85,11 +86,19 @@ impl<'tcx> TyVal<'tcx> {
 
                 match int_ty {
                     IntTy::I32 => {
-                        let mut buf = [0;4];
+                        let mut buf = [0; 4];
                         LittleEndian::write_i32(&mut buf, val as i32);
                         return buf.to_vec();
                     },
                     _ => unimplemented!()
+                }
+            },
+            TypeVariants::TyBool => {
+                match self.val {
+                    Value::Bool(b) => {
+                        vec![b as u8]
+                    },
+                    _ => panic!("Mismatched Types")
                 }
             },
             _ => unimplemented!()
@@ -105,6 +114,11 @@ impl<'tcx> TyVal<'tcx> {
                     return TyVal::new(ty, val);
                 },
                 _ => unimplemented!()
+            },
+            TypeVariants::TyBool => {
+                assert_eq!(bytes.len(), 1);
+                let val = bytes[0] == 1;
+                TyVal::new(ty, Value::Bool(val))
             },
             _ => unimplemented!()
         }
@@ -275,6 +289,9 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                         match value.val {
                             ConstVal::Integral(int) => {
                                 val = Value::Int(int.to_u128().unwrap())
+                            },
+                            ConstVal::Bool(b) => {
+                                val = Value::Bool(b)
                             },
                             ConstVal::Function(def_if, substs) => {
                                 val = Value::None
