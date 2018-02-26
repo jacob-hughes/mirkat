@@ -53,10 +53,11 @@ use machine::{Machine, Address};
 const MEMORY_CAPACITY: usize = 1024; // in Bytes.
 
 #[derive(Debug, Clone)]
-pub enum Value {
+pub enum Value<'tcx> {
     Int(u128),
     Bool(bool),
     Ref(usize), // a Rust ptr
+    Aggregate(Vec<TyVal<'tcx>>), // Tuple, struct etc..
     None,
 }
 
@@ -65,11 +66,11 @@ pub enum Value {
 #[derive(Debug, Clone)]
 pub struct TyVal<'tcx> {
     ty: Ty<'tcx>,
-    val: Value,
+    val: Value<'tcx>,
 }
 
 impl<'tcx> TyVal<'tcx> {
-    pub fn new(ty: Ty<'tcx>, val: Value) -> Self {
+    pub fn new(ty: Ty<'tcx>, val: Value<'tcx>) -> Self {
         Self {
             ty: ty,
             val: val
@@ -101,6 +102,18 @@ impl<'tcx> TyVal<'tcx> {
                     _ => panic!("Mismatched Types")
                 }
             },
+            TypeVariants::TyTuple(..) => {
+                match self.val {
+                    Value::Aggregate(ref elems) =>  {
+                        let mut bytes: Vec<u8> = Vec::new();
+                        for elem in elems {
+                            bytes.extend(elem.to_bytes())
+                        }
+                        return bytes;
+                    },
+                    _ => panic!("Mismatched Types")
+                }
+            }
             _ => unimplemented!()
         }
     }
@@ -120,6 +133,18 @@ impl<'tcx> TyVal<'tcx> {
                 let val = bytes[0] == 1;
                 TyVal::new(ty, Value::Bool(val))
             },
+            TypeVariants::TyTuple(ref elem_types, ..) => {
+                let mut start = 0;
+                let mut vals: Vec<TyVal> = Vec::new();
+                for ty in elem_types.iter() {
+                    let end = start + size_of(ty);
+                    let sub = bytes[start..end].to_vec();
+                    vals.push(TyVal::from_bytes(sub, ty));
+                    start = end;
+                }
+                let tup = Value::Aggregate(vals);
+                return TyVal::new(ty, tup);
+            }
             _ => unimplemented!()
         }
     }
