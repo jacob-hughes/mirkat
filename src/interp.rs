@@ -213,13 +213,24 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
             Rvalue::Aggregate(ref kind, ref ops) => {
                 match **kind {
                     AggregateKind::Tuple => {
-                        // XXX: Tuple layout needs some proper thought, and
-                        // should be upcoming in the next PR, so we handle the
-                        // empty tuple explicitly as this is the bottom type in
-                        // Rust.
-                        if ops.len() != 0 {
-                            unimplemented!()
+                        if ops.len() == 0 {
+                            return // Bottom type is empty tuple, and zero-sized.
                         }
+
+                        let elem_tys = match dest_ty.sty {
+                            TypeVariants::TyTuple(ref tys, ..) => tys,
+                            _ => panic!("Type mismatch")
+                        };
+
+                        let mut vals: Vec<TyVal<'tcx>> = Vec::new();
+                        for (op, ty) in ops.iter().zip(elem_tys.iter()) {
+                            let val = self.eval_operand(op).val;
+                            let tv = TyVal::new(ty, val);
+                            vals.push(tv);
+                        }
+                        let val = Value::Aggregate(vals);
+                        let tv = TyVal::new(dest_ty, val);
+                        self.store(tv, dest);
                     },
                     _ => unimplemented!()
                 }
