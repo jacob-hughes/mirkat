@@ -223,12 +223,14 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
             Rvalue::Aggregate(ref kind, ref ops) => {
                 match **kind {
                     AggregateKind::Tuple => {
-                        // XXX: Tuple layout needs some proper thought, and
-                        // should be upcoming in the next PR, so we handle the
-                        // empty tuple explicitly as this is the bottom type in
-                        // Rust.
-                        if ops.len() != 0 {
-                            unimplemented!()
+                        if ops.len() == 0 {
+                            return; // Bottom type is empty tuple, and zero-sized.
+                        }
+
+                        let mut vals: Vec<Value> = Vec::new();
+                        for op in ops.iter() {
+                            let val = self.eval_operand(op).val;
+                            vals.push(val);
                         }
                     },
                     _ => unimplemented!()
