@@ -53,10 +53,11 @@ use machine::{Machine, Address};
 const MEMORY_CAPACITY: usize = 1024; // in Bytes.
 
 #[derive(Debug, Clone)]
-pub enum Value {
+pub enum Value<'tcx> {
     Int(u128),
     Bool(bool),
     Ref(usize), // a Rust ptr
+    Aggregate(Vec<TyVal<'tcx>>), // Tuple, struct etc..
     None,
 }
 
@@ -65,11 +66,11 @@ pub enum Value {
 #[derive(Debug, Clone)]
 pub struct TyVal<'tcx> {
     ty: Ty<'tcx>,
-    val: Value,
+    val: Value<'tcx>,
 }
 
 impl<'tcx> TyVal<'tcx> {
-    pub fn new(ty: Ty<'tcx>, val: Value) -> Self {
+    pub fn new(ty: Ty<'tcx>, val: Value<'tcx>) -> Self {
         Self {
             ty: ty,
             val: val
@@ -101,6 +102,18 @@ impl<'tcx> TyVal<'tcx> {
                     _ => panic!("Mismatched Types")
                 }
             },
+            TypeVariants::TyTuple(..) => {
+                match self.val {
+                    Value::Aggregate(ref elems) =>  {
+                        let mut bytes: Vec<u8> = Vec::new();
+                        for elem in elems {
+                            bytes.extend(elem.to_bytes())
+                        }
+                        return bytes;
+                    },
+                    _ => panic!("Mismatched Types")
+                }
+            }
             _ => unimplemented!()
         }
     }
@@ -120,6 +133,18 @@ impl<'tcx> TyVal<'tcx> {
                 let val = bytes[0] == 1;
                 TyVal::new(ty, Value::Bool(val))
             },
+            TypeVariants::TyTuple(ref elem_types, ..) => {
+                let mut start = 0;
+                let mut vals: Vec<TyVal> = Vec::new();
+                for ty in elem_types.iter() {
+                    let end = start + size_of(ty);
+                    let sub = bytes[start..end].to_vec();
+                    vals.push(TyVal::from_bytes(sub, ty));
+                    start = end;
+                }
+                let tup = Value::Aggregate(vals);
+                return TyVal::new(ty, tup);
+            }
             _ => unimplemented!()
         }
     }
@@ -188,13 +213,24 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
             Rvalue::Aggregate(ref kind, ref ops) => {
                 match **kind {
                     AggregateKind::Tuple => {
-                        // XXX: Tuple layout needs some proper thought, and
-                        // should be upcoming in the next PR, so we handle the
-                        // empty tuple explicitly as this is the bottom type in
-                        // Rust.
-                        if ops.len() != 0 {
-                            unimplemented!()
+                        if ops.len() == 0 {
+                            return // Bottom type is empty tuple, and zero-sized.
                         }
+
+                        let elem_tys = match dest_ty.sty {
+                            TypeVariants::TyTuple(ref tys, ..) => tys,
+                            _ => panic!("Type mismatch")
+                        };
+
+                        let mut vals: Vec<TyVal<'tcx>> = Vec::new();
+                        for (op, ty) in ops.iter().zip(elem_tys.iter()) {
+                            let val = self.eval_operand(op).val;
+                            let tv = TyVal::new(ty, val);
+                            vals.push(tv);
+                        }
+                        let val = Value::Aggregate(vals);
+                        let tv = TyVal::new(dest_ty, val);
+                        self.store(tv, dest);
                     },
                     _ => unimplemented!()
                 }
