@@ -43,8 +43,9 @@ use rustc::middle::const_val::ConstVal;
 use rustc::mir::{
     START_BLOCK, Mir, BasicBlock, BasicBlockData, Statement, StatementKind,
     Rvalue, Place, Terminator, TerminatorKind, AggregateKind, Operand, Constant,
-    Literal, BinOp
+    Literal, BinOp, ProjectionElem
 };
+use rustc_data_structures::indexed_vec::Idx;
 use syntax::ast::IntTy;
 
 use machine;
@@ -224,7 +225,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 match **kind {
                     AggregateKind::Tuple => {
                         if ops.len() == 0 {
-                            return; // Bottom type is empty tuple, and zero-sized.
+                            return; // Unit type is empty tuple, and zero-sized.
                         }
 
                         let mut vals: Vec<Value> = Vec::new();
@@ -298,10 +299,44 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// location inside the Machine.
     fn eval_place(&mut self, place: &Place<'tcx>) -> Address {
         match *place {
-            Place::Local(local) => Address::Local(local),
+            Place::Local(local) => Address::Local(local, 0),
             Place::Static(ref static_) => unimplemented!(),
-            Place::Projection(ref proj) => unimplemented!(),
+            Place::Projection(ref proj) => {
+                match proj.elem {
+                    ProjectionElem::Field(field, _) => {
+                        let base_ty = self.place_ty(&proj.base);
+                        let offset = self.get_field_offset(base_ty, field.index());
+                        match proj.base {
+                            Place::Local(local) => {
+                                return Address::Local(local, offset);
+                            },
+                            _ => unimplemented!()
+                        }
+                    }
+                    _ => unimplemented!("{:?}", proj.elem)
+                }
+            }
         }
+    }
+
+    fn get_field_offset(&self, ty: Ty<'tcx>, field: usize) -> usize {
+        match ty.sty {
+            TypeVariants::TyTuple(ref elem_types, ..) => {
+                let mut offset = 0;
+                for (i, ty) in elem_types.iter().enumerate() {
+                    if i == field {
+                        break;
+                    }
+                    offset += size_of(ty);
+                }
+                return offset;
+            },
+            _ => unimplemented!()
+        }
+    }
+
+    fn place_ty(&self, place: &Place<'tcx>) -> Ty<'tcx> {
+        place.ty(self.cur_frame().mir, self.tcx).to_ty(self.tcx)
     }
 
     /// An operand's value can always be determined without needing to temporarily
