@@ -103,7 +103,7 @@ impl<'tcx> Frame<'tcx> {
 #[derive(Debug)]
 pub enum Address {
     Heap(usize), // pointer to offset in memory.
-    Local(Local)
+    Local(Local, usize),
 }
 
 pub struct Memory {
@@ -232,23 +232,25 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
 
     pub fn store(&mut self, tv: TyVal<'tcx>, dest: Address) {
         match dest {
-            Address::Local(key) => {
+            Address::Local(key, _) => {
                 self.cur_frame_mut().set_local(key, tv.to_bytes())
             },
             Address::Heap(ptr) =>  {
                 self.memory.store(ptr, tv.to_bytes())
-            }
+            },
+            _ => unimplemented!()
         }
     }
 
     pub fn read(&self, dest: Address, size: usize) -> &[u8] {
         match dest {
-            Address::Local(key) => {
+            Address::Local(key, _) => {
                 self.cur_frame().get_local(key)
-            }
+            },
             Address::Heap(ptr) => {
                 self.memory.read(ptr, size)
-            }
+            },
+            _ => unimplemented!()
         }
     }
 }

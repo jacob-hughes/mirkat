@@ -43,8 +43,9 @@ use rustc::middle::const_val::ConstVal;
 use rustc::mir::{
     START_BLOCK, Mir, BasicBlock, BasicBlockData, Statement, StatementKind,
     Rvalue, Place, Terminator, TerminatorKind, AggregateKind, Operand, Constant,
-    Literal, BinOp
+    Literal, BinOp, ProjectionElem
 };
+use rustc_data_structures::indexed_vec::Idx;
 use syntax::ast::IntTy;
 
 use machine;
@@ -57,7 +58,80 @@ pub enum Value {
     Int(u128),
     Bool(bool),
     Ref(usize), // a Rust ptr
+    Aggregate(Vec<Value>), // Tuple, struct etc..
     None,
+}
+
+impl<'tcx> Value {
+    fn to_bytes(&self, ty: Ty<'tcx>) -> Vec<u8> {
+        match ty.sty {
+            TypeVariants::TyInt(int_ty) => {
+                let val = match *self {
+                    Value::Int(i) => i,
+                    _ => panic!("Mismatched Types")
+                };
+
+                match int_ty {
+                    IntTy::I32 => {
+                        let mut buf = [0; 4];
+                        LittleEndian::write_i32(&mut buf, val as i32);
+                        return buf.to_vec();
+                    },
+                    _ => unimplemented!()
+                }
+            },
+            TypeVariants::TyBool => {
+                match *self {
+                    Value::Bool(b) => {
+                        vec![b as u8]
+                    },
+                    _ => panic!("Mismatched Types")
+                }
+            },
+            TypeVariants::TyTuple(ref elem_tys, ..) => {
+                match *self {
+                    Value::Aggregate(ref elems) =>  {
+                        let mut bytes: Vec<u8> = Vec::new();
+                        for (elem, ty) in elems.iter().zip(elem_tys.iter()) {
+                            bytes.extend(elem.to_bytes(ty))
+                        }
+                        return bytes;
+                    },
+                    _ => panic!("Mismatched Types")
+                }
+            }
+            _ => unimplemented!()
+        }
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>, ty: Ty<'tcx>) -> Self {
+        match ty.sty {
+            TypeVariants::TyInt(int_ty) => match int_ty {
+                IntTy::I32 => {
+                    let v = LittleEndian::read_i32(bytes.as_slice());
+                    return Value::Int(v as u128);
+                },
+                _ => unimplemented!()
+            },
+            TypeVariants::TyBool => {
+                assert_eq!(bytes.len(), 1);
+                let val = bytes[0] == 1;
+                return Value::Bool(val)
+            },
+            TypeVariants::TyTuple(ref elem_types, ..) => {
+                let mut start = 0;
+                let mut vals: Vec<Value> = Vec::new();
+                for ty in elem_types.iter() {
+                    let end = start + size_of(ty);
+                    let sub = bytes[start..end].to_vec();
+                    vals.push(Value::from_bytes(sub, ty));
+                    start = end;
+                }
+                return Value::Aggregate(vals);
+            }
+            _ => unimplemented!()
+        }
+    }
 }
 
 /// A Rust MIR value and its type. Used to help de/serialize values to bytes for
@@ -77,52 +151,14 @@ impl<'tcx> TyVal<'tcx> {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        match self.ty.sty {
-            TypeVariants::TyInt(int_ty) => {
-                let val = match self.val {
-                    Value::Int(i) => i,
-                    _ => panic!("Mismatched Types")
-                };
-
-                match int_ty {
-                    IntTy::I32 => {
-                        let mut buf = [0; 4];
-                        LittleEndian::write_i32(&mut buf, val as i32);
-                        return buf.to_vec();
-                    },
-                    _ => unimplemented!()
-                }
-            },
-            TypeVariants::TyBool => {
-                match self.val {
-                    Value::Bool(b) => {
-                        vec![b as u8]
-                    },
-                    _ => panic!("Mismatched Types")
-                }
-            },
-            _ => unimplemented!()
-        }
+        self.val.to_bytes(&self.ty)
     }
 
     pub fn from_bytes(bytes: Vec<u8>, ty: Ty<'tcx>) -> Self {
-        match ty.sty {
-            TypeVariants::TyInt(int_ty) => match int_ty {
-                IntTy::I32 => {
-                    let v = LittleEndian::read_i32(bytes.as_slice());
-                    let val = Value::Int(v as u128);
-                    return TyVal::new(ty, val);
-                },
-                _ => unimplemented!()
-            },
-            TypeVariants::TyBool => {
-                assert_eq!(bytes.len(), 1);
-                let val = bytes[0] == 1;
-                TyVal::new(ty, Value::Bool(val))
-            },
-            _ => unimplemented!()
-        }
+        let val = Value::from_bytes(bytes, ty);
+        TyVal::new(ty, val)
     }
+
 }
 
 impl<'a, 'tcx> Machine<'a, 'tcx> {
@@ -188,12 +224,14 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
             Rvalue::Aggregate(ref kind, ref ops) => {
                 match **kind {
                     AggregateKind::Tuple => {
-                        // XXX: Tuple layout needs some proper thought, and
-                        // should be upcoming in the next PR, so we handle the
-                        // empty tuple explicitly as this is the bottom type in
-                        // Rust.
-                        if ops.len() != 0 {
-                            unimplemented!()
+                        if ops.len() == 0 {
+                            return; // Unit type is empty tuple, and zero-sized.
+                        }
+
+                        let mut vals: Vec<Value> = Vec::new();
+                        for op in ops.iter() {
+                            let val = self.eval_operand(op).val;
+                            vals.push(val);
                         }
                     },
                     _ => unimplemented!()
@@ -261,10 +299,44 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// location inside the Machine.
     fn eval_place(&mut self, place: &Place<'tcx>) -> Address {
         match *place {
-            Place::Local(local) => Address::Local(local),
+            Place::Local(local) => Address::Local(local, 0),
             Place::Static(ref static_) => unimplemented!(),
-            Place::Projection(ref proj) => unimplemented!(),
+            Place::Projection(ref proj) => {
+                match proj.elem {
+                    ProjectionElem::Field(field, _) => {
+                        let base_ty = self.place_ty(&proj.base);
+                        let offset = self.get_field_offset(base_ty, field.index());
+                        match proj.base {
+                            Place::Local(local) => {
+                                return Address::Local(local, offset);
+                            },
+                            _ => unimplemented!()
+                        }
+                    }
+                    _ => unimplemented!("{:?}", proj.elem)
+                }
+            }
         }
+    }
+
+    fn get_field_offset(&self, ty: Ty<'tcx>, field: usize) -> usize {
+        match ty.sty {
+            TypeVariants::TyTuple(ref elem_types, ..) => {
+                let mut offset = 0;
+                for (i, ty) in elem_types.iter().enumerate() {
+                    if i == field {
+                        break;
+                    }
+                    offset += size_of(ty);
+                }
+                return offset;
+            },
+            _ => unimplemented!()
+        }
+    }
+
+    fn place_ty(&self, place: &Place<'tcx>) -> Ty<'tcx> {
+        place.ty(self.cur_frame().mir, self.tcx).to_ty(self.tcx)
     }
 
     /// An operand's value can always be determined without needing to temporarily
