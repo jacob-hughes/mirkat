@@ -406,13 +406,22 @@ pub fn size_of<'tcx>(ty: Ty<'tcx>) -> usize {
     use::syntax::ast::IntTy;
     match ty.sty {
         TypeVariants::TyInt(int_ty) => match int_ty {
-            IntTy::I8 => 8,
-            IntTy::I16 => 16,
-            IntTy::I32 => 32,
-            IntTy::I64 => 64,
+            IntTy::I8 => 1,
+            IntTy::I16 => 2,
+            IntTy::I32 => 4,
+            IntTy::I64 => 8,
+            IntTy::I128 => 16,
             _ => unimplemented!(),
         },
-        _ => unimplemented!(),
+        TypeVariants::TyBool => 1,
+        TypeVariants::TyTuple(tys, ..) => {
+            let mut size = 0;
+            for t in tys.iter() {
+                size += size_of(t);
+            }
+            size
+        },
+        _ => unimplemented!("{:?}", ty.sty),
     }
 }
 
