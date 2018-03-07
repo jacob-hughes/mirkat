@@ -49,7 +49,7 @@ use rustc_data_structures::indexed_vec::Idx;
 use syntax::ast::IntTy;
 
 use machine;
-use machine::{Machine, Address};
+use machine::{Machine, Address, Ptr};
 
 const MEMORY_CAPACITY: usize = 1024; // in Bytes.
 
@@ -218,8 +218,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         match *rvalue {
             Rvalue::Use(ref operand) => {
                 let val = self.eval_operand(operand).val;
-                let tv = TyVal::new(dest_ty, val);
-                self.store(tv, dest);
+                self.store(val.to_bytes(dest_ty), dest);
             },
             Rvalue::Aggregate(ref kind, ref ops) => {
                 match **kind {
@@ -299,37 +298,60 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// location inside the Machine.
     fn eval_place(&mut self, place: &Place<'tcx>) -> Address {
         match *place {
-            Place::Local(local) => Address::Local(local, 0),
-            Place::Static(ref static_) => unimplemented!(),
+            Place::Local(local) => {
+                Address::Local(local, None)
+            }
             Place::Projection(ref proj) => {
                 match proj.elem {
                     ProjectionElem::Field(field, _) => {
                         let base_ty = self.place_ty(&proj.base);
-                        let offset = self.get_field_offset(base_ty, field.index());
-                        match proj.base {
-                            Place::Local(local) => {
-                                return Address::Local(local, offset);
+                        let mut ptr = self.get_field_ptr(base_ty, field.index());
+                        let base_addr = self.eval_place(&proj.base);
+                        // I'm not sure how correct this is. This may fail if we
+                        // recursively call through projections. Unfortunately,
+                        // I'm not sure why this would ever be the case
+                        // though... Nested field access is turned into local
+                        // move's in MIR, so perhaps it's an edge case not worth
+                        // worrying about.
+                        match base_addr {
+                            Address::Local(local, _) => {
+                                return Address::Local(local, Some(ptr));
                             },
-                            _ => unimplemented!()
+                            Address::Heap(hp) => {
+                                ptr.addr += hp.addr;
+                                return Address::Heap(ptr);
+                            }
                         }
-                    }
+                    },
                     _ => unimplemented!("{:?}", proj.elem)
                 }
-            }
+            },
+            Place::Static(ref static_) => unimplemented!(),
         }
     }
 
-    fn get_field_offset(&self, ty: Ty<'tcx>, field: usize) -> usize {
+    fn get_value_from_place(&mut self,
+                           place: &Place<'tcx>,
+                           ty: Ty<'tcx>)
+                           -> TyVal<'tcx> {
+        let addr = self.eval_place(place);
+        let bytes = self.read(addr).to_vec();
+        TyVal::from_bytes(bytes, ty)
+    }
+
+    fn get_field_ptr(&self, ty: Ty<'tcx>, field: usize) -> Ptr {
         match ty.sty {
             TypeVariants::TyTuple(ref elem_types, ..) => {
-                let mut offset = 0;
+                let mut start = 0;
+                let mut size = 0;
                 for (i, ty) in elem_types.iter().enumerate() {
                     if i == field {
+                        size = size_of(ty);
                         break;
                     }
-                    offset += size_of(ty);
+                    start += size_of(ty);
                 }
-                return offset;
+                return Ptr::new(start, size);
             },
             _ => unimplemented!()
         }
@@ -349,10 +371,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         match *operand {
             Operand::Copy(ref place) |
             Operand::Move(ref place) => {
-                let dest = self.eval_place(place);
-                let size = size_of(ty);
-                let bytes = self.read(dest, size).to_vec();
-                TyVal::from_bytes(bytes, ty)
+                self.get_value_from_place(place, ty)
             }
             Operand::Constant(ref constant) => {
                 let val: Value;
@@ -377,7 +396,6 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 };
                 TyVal::new(ty, val)
             },
-            _ => unimplemented!()
         }
     }
 }
