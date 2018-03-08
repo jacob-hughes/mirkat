@@ -36,6 +36,7 @@
 
 use byteorder::{ByteOrder, LittleEndian};
 use std::process::exit;
+use std::mem;
 use rustc::ty;
 use rustc::ty::{Ty, TyCtxt, TypeVariants};
 use rustc::hir::def_id::DefId;
@@ -313,6 +314,8 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                         // though... Nested field access is turned into local
                         // move's in MIR, so perhaps it's an edge case not worth
                         // worrying about.
+                        assert_ne!(mem::discriminant(&proj.base), mem::discriminant(place));
+
                         match base_addr {
                             Address::Local(local, _) => {
                                 return Address::Local(local, Some(ptr));
