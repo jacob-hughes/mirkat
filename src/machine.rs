@@ -39,7 +39,7 @@ use rustc::mir::{Mir, Local, BasicBlock, Place};
 use rustc::ty::{TyCtxt, Instance, InstanceDef};
 use rustc_data_structures::indexed_vec::IndexVec;
 
-use interp::TyVal;
+use interp::{TyVal, size_of};
 
 #[derive(Debug)]
 pub struct Frame<'tcx> {
@@ -66,17 +66,16 @@ pub struct Frame<'tcx> {
     /// not need a locals field (e.g some closures and 0-arg functions).
     /// Functions that do require a local env can have it explicitly
     /// instantiated lazily when required.
-    locals: IndexVec<Local, Option<Vec<u8>>>
+    locals: IndexVec<Local, Vec<u8>>
 }
 
 impl<'tcx> Frame<'tcx> {
     pub fn new(def_id: DefId,
                mir: &'tcx Mir<'tcx>,
-               locals: IndexVec<Local,Option<Vec<u8>>>,
+               locals: IndexVec<Local, Vec<u8>>,
                ret_val: Option<Address>,
                ret_block: Option<BasicBlock>)
                -> Self {
-
         Frame {
             def_id: def_id,
             mir: mir,
@@ -86,15 +85,25 @@ impl<'tcx> Frame<'tcx> {
         }
     }
 
-    fn set_local(&mut self, local: Local, val: Vec<u8>) {
-        self.locals[local] = Some(val)
+    fn set_local(&mut self, local: Local, bytes: Vec<u8>) {
+        self.locals[local] = bytes
     }
 
     fn get_local(&self, local: Local) -> &[u8] {
-        match self.locals[local] {
-            Some(ref v) => v.as_slice(),
-            None => panic!("Local does not exist")
-        }
+        self.locals[local].as_slice()
+    }
+
+    fn get_local_field(&self, local: Local, ptr: Ptr) -> &[u8] {
+        let local = self.get_local(local);
+        &local[ptr.addr..ptr.size]
+    }
+
+    fn set_local_field(&mut self, local: Local, ptr: Ptr, bytes: Vec<u8>) {
+        assert_eq!(ptr.size, bytes.len());
+        let end = ptr.addr + ptr.size;
+        self.locals.get_mut(local)
+                   .unwrap()
+                   .splice(ptr.addr..end, bytes.into_iter());
     }
 }
 
@@ -102,8 +111,23 @@ impl<'tcx> Frame<'tcx> {
 // TODO: Extend to work with static constructs.
 #[derive(Debug)]
 pub enum Address {
-    Heap(usize), // pointer to offset in memory.
-    Local(Local, usize),
+    Heap(Ptr), // pointer to offset in memory.
+    Local(Local, Option<Ptr>), // Optional ptr for specific field access
+}
+
+#[derive(Debug)]
+pub struct Ptr {
+    pub addr: usize,
+    pub size: usize,
+}
+
+impl Ptr {
+    pub fn new(addr: usize, size: usize) -> Self {
+        Self {
+            addr: addr,
+            size: size,
+        }
+    }
 }
 
 pub struct Memory {
@@ -203,7 +227,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
 
     pub fn push_frame(&mut self,
                       def_id: DefId,
-                      mut args: Vec<TyVal<'tcx>>,
+                      args: Vec<TyVal<'tcx>>,
                       ret_val: Option<Address>,
                       ret_block: Option<BasicBlock>){
         let def = Instance::mono(self.tcx, def_id).def;
@@ -211,15 +235,13 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
 
         // Initialise locals
         let size = mir.local_decls.len();
-        let mut tmp_locals = vec![None; size];
-        for i in (0..mir.arg_count).rev() {
-            // Reverse order is an optimisation. Popping means that we
-            // don't shift the vec each time after a remove
-            let arg = args.pop().unwrap().to_bytes();
-            tmp_locals[i+1] = Some(arg); // +1 because of ret val as first index
+        let mut locals: IndexVec<Local, Vec<u8>> = IndexVec::with_capacity(size);
+        let byte_args: IndexVec<Local, Vec<u8>> = args.into_iter().map(|x| x.to_bytes()).collect();
+        locals.extend(byte_args);
+        for decl in mir.local_decls.iter().skip(mir.arg_count) {
+            let size = size_of(decl.ty);
+            locals.push(vec![0; size]);
         }
-        let mut locals: IndexVec<Local, Option<Vec<u8>>> = IndexVec::with_capacity(size);
-        locals.extend(tmp_locals);
 
         let frame = Frame::new(def_id, mir, locals, ret_val, ret_block);
         self.stack.push(frame)
@@ -230,27 +252,32 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
             .expect("Popped from empty stack")
     }
 
-    pub fn store(&mut self, tv: TyVal<'tcx>, dest: Address) {
+    pub fn store(&mut self, bytes: Vec<u8>, dest: Address) {
         match dest {
-            Address::Local(key, _) => {
-                self.cur_frame_mut().set_local(key, tv.to_bytes())
+            Address::Local(local, ptr) => {
+                match ptr {
+                    Some(p) => self.cur_frame_mut().set_local_field(local, p, bytes),
+                    None => self.cur_frame_mut().set_local(local, bytes)
+                }
             },
             Address::Heap(ptr) =>  {
-                self.memory.store(ptr, tv.to_bytes())
-            },
-            _ => unimplemented!()
+                assert_eq!(ptr.size, bytes.len());
+                self.memory.store(ptr.addr, bytes)
+            }
         }
     }
 
-    pub fn read(&self, dest: Address, size: usize) -> &[u8] {
+    pub fn read(&self, dest: Address) -> &[u8] {
         match dest {
-            Address::Local(key, _) => {
-                self.cur_frame().get_local(key)
+            Address::Local(local, ptr) => {
+                match ptr {
+                    Some(p) => self.cur_frame().get_local_field(local, p),
+                    None => self.cur_frame().get_local(local)
+                }
             },
-            Address::Heap(ptr) => {
-                self.memory.read(ptr, size)
-            },
-            _ => unimplemented!()
+            Address::Heap(ptr) =>  {
+                self.memory.read(ptr.addr, ptr.size)
+            }
         }
     }
 }
