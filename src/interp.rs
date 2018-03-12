@@ -334,8 +334,27 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                     .map(|arg| self.eval_operand(arg))
                     .collect();
                 self.eval_fn_call(fn_def.def_id(), args, ret_val, ret_block)
+            },
+            TerminatorKind::Assert {
+                ref cond,
+                expected,
+                ref msg,
+                target,
+                ref cleanup
+            } => {
+                let cond = self.eval_operand(cond).val;
+                let cond_val = match cond {
+                    Value::Bool(b) => b,
+                    _ => panic!("Mismatched type")
+                };
+
+                if cond_val == expected {
+                    self.eval_basic_block(target);
+                } else {
+                    panic!("{:?}", msg);
+                }
             }
-            _ => unimplemented!()
+            _ => unimplemented!("{:?}", terminator.kind)
         }
     }
 
