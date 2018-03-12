@@ -47,7 +47,7 @@ use rustc::mir::{
     Literal, BinOp, ProjectionElem
 };
 use rustc_data_structures::indexed_vec::Idx;
-use syntax::ast::IntTy;
+use syntax::ast::{IntTy, UintTy};
 
 use machine;
 use machine::{Machine, Address, Ptr};
@@ -221,6 +221,14 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 let val = self.eval_operand(operand).val;
                 self.store(val.to_bytes(dest_ty), dest);
             },
+            Rvalue::CheckedBinaryOp(binop, ref lhs, ref rhs) => {
+                // We assume that the lhs and rhs are of the same type
+                let lhs = self.eval_operand(lhs);
+                let rhs = self.eval_operand(rhs);
+                let (res, overflow) = self.binary_op(binop, lhs, rhs);
+                let val = Value::Aggregate(vec![res, overflow]);
+                self.store(val.to_bytes(dest_ty), dest);
+            },
             Rvalue::Aggregate(ref kind, ref ops) => {
                 match **kind {
                     AggregateKind::Tuple => {
@@ -233,6 +241,27 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                             let val = self.eval_operand(op).val;
                             vals.push(val);
                         }
+                    },
+                    _ => unimplemented!()
+                }
+            },
+            _ => unimplemented!("{:?}", rvalue)
+        }
+    }
+
+    fn binary_op(&self,
+                 binop: BinOp,
+                 lhs: TyVal<'tcx>,
+                 rhs: TyVal<'tcx>)
+                 -> (Value, Value) {
+        match binop {
+            BinOp::Add => {
+                match (lhs.val, rhs.val) {
+                    (Value::Int(lv), Value::Int(rv)) => {
+                        assert_eq!(lhs.ty, rhs.ty);
+                        let res = lv + rv;
+                        let overflow = !in_bounds(res, &lhs.ty);
+                        (Value::Int(res), Value::Bool(overflow))
                     },
                     _ => unimplemented!()
                 }
@@ -441,5 +470,20 @@ pub fn entry_point<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     let m = machine::Memory::new(MEMORY_CAPACITY);
     let mut vm = Machine::new(m, tcx);
     vm.eval_fn_call(def_id, vec![], None, None);
+}
+
+fn in_bounds<'tcx>(val: u128, ty: Ty<'tcx>) -> bool {
+    match ty.sty {
+        TypeVariants::TyInt(int_ty) => {
+            match int_ty {
+                IntTy::I32 => {
+                    let val = val as i32;
+                    val >= <i32>::min_value() && val <= <i32>::max_value()
+                },
+                _ => unimplemented!()
+            }
+        },
+        _ => unimplemented!()
+    }
 }
 
