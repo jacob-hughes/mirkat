@@ -300,13 +300,13 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     fn eval_place(&mut self, place: &Place<'tcx>) -> Address {
         match *place {
             Place::Local(local) => {
-                Address::Local(local, None)
+                let ptr = self.cur_frame().local_ptr(local);
+                Address::Local(ptr)
             }
             Place::Projection(ref proj) => {
                 match proj.elem {
                     ProjectionElem::Field(field, _) => {
                         let base_ty = self.place_ty(&proj.base);
-                        let mut ptr = self.get_field_ptr(base_ty, field.index());
                         let base_addr = self.eval_place(&proj.base);
                         // I'm not sure how correct this is. This may fail if we
                         // recursively call through projections. Unfortunately,
@@ -317,13 +317,14 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                         assert_ne!(mem::discriminant(&proj.base), mem::discriminant(place));
 
                         match base_addr {
-                            Address::Local(local, _) => {
-                                return Address::Local(local, Some(ptr));
+                            Address::Local(p) => {
+                                let ptr = self.field_ptr(p, field.index(), base_ty);
+                                return Address::Local(ptr);
                             },
-                            Address::Heap(hp) => {
-                                ptr.addr += hp.addr;
+                            Address::Heap(p) => {
+                                let ptr = self.field_ptr(p, field.index(), base_ty);
                                 return Address::Heap(ptr);
-                            }
+                            },
                         }
                     },
                     _ => unimplemented!("{:?}", proj.elem)
@@ -333,6 +334,29 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         }
     }
 
+    /// Given a pointer to some aggregate type, this will return a new, more
+    /// granular pointer to the field specified by the field index.
+    pub fn field_ptr(&self, ptr: Ptr, field_idx: usize, ty: Ty<'tcx>) -> Ptr {
+        let (start, size) = match ty.sty {
+            TypeVariants::TyTuple(ref elem_types, ..) => {
+                let mut start = 0;
+                let mut size = 0;
+                for (i, ty) in elem_types.iter().enumerate() {
+                    if i == field_idx {
+                        size = size_of(ty);
+                        break;
+                    }
+                    start += size_of(ty);
+                }
+                (start, size)
+            },
+            _ => unimplemented!()
+        };
+        assert!(size <= ptr.size);
+        let addr = ptr.addr + start;
+        Ptr::new(addr, size)
+    }
+
     fn get_value_from_place(&mut self,
                            place: &Place<'tcx>,
                            ty: Ty<'tcx>)
@@ -340,24 +364,6 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         let addr = self.eval_place(place);
         let bytes = self.read(addr).to_vec();
         TyVal::from_bytes(bytes, ty)
-    }
-
-    fn get_field_ptr(&self, ty: Ty<'tcx>, field: usize) -> Ptr {
-        match ty.sty {
-            TypeVariants::TyTuple(ref elem_types, ..) => {
-                let mut start = 0;
-                let mut size = 0;
-                for (i, ty) in elem_types.iter().enumerate() {
-                    if i == field {
-                        size = size_of(ty);
-                        break;
-                    }
-                    start += size_of(ty);
-                }
-                return Ptr::new(start, size);
-            },
-            _ => unimplemented!()
-        }
     }
 
     fn place_ty(&self, place: &Place<'tcx>) -> Ty<'tcx> {

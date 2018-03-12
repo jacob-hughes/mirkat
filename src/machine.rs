@@ -37,7 +37,7 @@ use std::mem::align_of;
 use rustc::hir::def_id::DefId;
 use rustc::mir::{Mir, Local, BasicBlock, Place};
 use rustc::ty::{TyCtxt, Instance, InstanceDef};
-use rustc_data_structures::indexed_vec::IndexVec;
+use rustc_data_structures::indexed_vec::{Idx};
 
 use interp::{TyVal, size_of};
 
@@ -62,57 +62,69 @@ pub struct Frame<'tcx> {
     /// return to any particular address.
     pub ret_block: Option<BasicBlock>,
 
-    /// We make this optional for the purpose of optimisation. Some functions do
-    /// not need a locals field (e.g some closures and 0-arg functions).
-    /// Functions that do require a local env can have it explicitly
-    /// instantiated lazily when required.
-    locals: IndexVec<Local, Vec<u8>>
+    /// This field serves as a lookup to a vars position in the contiguous
+    /// `locals` byte vector, where the index is the local id and the value is
+    /// the corresponding index into the `locals` field where the value's bytes
+    /// start.
+    ///
+    /// This should not be accessed directly.
+    idxs: Vec<usize>,
+
+    /// An exact sized byte vector containing the frame local vars in their byte
+    /// representation. These values can change at runtime and this field should
+    /// not be accessed directly.
+    locals: Vec<u8>,
 }
 
 impl<'tcx> Frame<'tcx> {
     pub fn new(def_id: DefId,
                mir: &'tcx Mir<'tcx>,
-               locals: IndexVec<Local, Vec<u8>>,
+               idxs: Vec<usize>,
+               locals: Vec<u8>,
                ret_val: Option<Address>,
                ret_block: Option<BasicBlock>)
                -> Self {
         Frame {
             def_id: def_id,
             mir: mir,
+            idxs: idxs,
             locals: locals,
             ret_val: ret_val,
             ret_block: ret_block,
         }
     }
 
-    fn set_local(&mut self, local: Local, bytes: Vec<u8>) {
-        self.locals[local] = bytes
+    pub fn local_ptr(&self, local: Local) -> Ptr {
+        let idx = local.index();
+        let start = self.idxs[idx];
+        let end = if idx + 1 < self.idxs.len() {
+            self.idxs[idx + 1]
+        } else { // if it's the last local..
+            self.locals.len()
+        };
+        let size = end - start;
+        Ptr::new(start, size)
     }
 
-    fn get_local(&self, local: Local) -> &[u8] {
-        self.locals[local].as_slice()
-    }
-
-    fn get_local_field(&self, local: Local, ptr: Ptr) -> &[u8] {
-        let local = self.get_local(local);
-        &local[ptr.addr..ptr.size]
-    }
-
-    fn set_local_field(&mut self, local: Local, ptr: Ptr, bytes: Vec<u8>) {
-        assert_eq!(ptr.size, bytes.len());
+    fn set_bytes(&mut self, ptr: Ptr, bytes: Vec<u8>) {
         let end = ptr.addr + ptr.size;
-        self.locals.get_mut(local)
-                   .unwrap()
-                   .splice(ptr.addr..end, bytes.into_iter());
+        assert_eq!(ptr.size, bytes.len());
+        self.locals.splice(ptr.addr..end, bytes.into_iter());
     }
+
+    fn get_bytes(&self, ptr: Ptr) -> &[u8] {
+        let end = ptr.addr + ptr.size;
+        &self.locals[ptr.addr..end]
+    }
+
 }
 
 /// Represents a pointer into some kind of memory.
 // TODO: Extend to work with static constructs.
 #[derive(Debug)]
 pub enum Address {
-    Heap(Ptr), // pointer to offset in memory.
-    Local(Local, Option<Ptr>), // Optional ptr for specific field access
+    Heap(Ptr),
+    Local(Ptr),
 }
 
 #[derive(Debug)]
@@ -233,17 +245,20 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         let def = Instance::mono(self.tcx, def_id).def;
         let mir = self.load_mir(def);
 
-        // Initialise locals
-        let size = mir.local_decls.len();
-        let mut locals: IndexVec<Local, Vec<u8>> = IndexVec::with_capacity(size);
-        let byte_args: IndexVec<Local, Vec<u8>> = args.into_iter().map(|x| x.to_bytes()).collect();
-        locals.extend(byte_args);
-        for decl in mir.local_decls.iter().skip(mir.arg_count) {
-            let size = size_of(decl.ty);
-            locals.push(vec![0; size]);
+        // Calculate local indexes
+        let mut local_idxs: Vec<usize> = Vec::with_capacity(mir.local_decls.len());
+        let mut next_idx = 0;
+        for decl in mir.local_decls.iter() {
+            local_idxs.push(next_idx);
+            next_idx += size_of(decl.ty);
         }
 
-        let frame = Frame::new(def_id, mir, locals, ret_val, ret_block);
+        // Init locals with args and zero the rest
+        let mut locals: Vec<u8> = vec![0; next_idx];
+        let args: Vec<u8> = args.into_iter().flat_map(|x| x.to_bytes()).collect();
+        locals.splice(0..args.len(), args.into_iter());
+
+        let frame = Frame::new(def_id, mir, local_idxs, locals, ret_val, ret_block);
         self.stack.push(frame)
     }
 
@@ -254,11 +269,8 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
 
     pub fn store(&mut self, bytes: Vec<u8>, dest: Address) {
         match dest {
-            Address::Local(local, ptr) => {
-                match ptr {
-                    Some(p) => self.cur_frame_mut().set_local_field(local, p, bytes),
-                    None => self.cur_frame_mut().set_local(local, bytes)
-                }
+            Address::Local(ptr) => {
+                self.cur_frame_mut().set_bytes(ptr, bytes)
             },
             Address::Heap(ptr) =>  {
                 assert_eq!(ptr.size, bytes.len());
@@ -269,11 +281,8 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
 
     pub fn read(&self, dest: Address) -> &[u8] {
         match dest {
-            Address::Local(local, ptr) => {
-                match ptr {
-                    Some(p) => self.cur_frame().get_local_field(local, p),
-                    None => self.cur_frame().get_local(local)
-                }
+            Address::Local(ptr) => {
+                self.cur_frame().get_bytes(ptr)
             },
             Address::Heap(ptr) =>  {
                 self.memory.read(ptr.addr, ptr.size)
