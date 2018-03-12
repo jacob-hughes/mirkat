@@ -266,10 +266,8 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 match (lhs.val, rhs.val) {
                     (Value::Int(lv), Value::Int(rv)) => {
                         assert_eq!(lhs.ty, rhs.ty);
-                        let addi = lv + rv;
-                        let res = Value::Int(addi);
-                        let overflow = Value::Bool(!in_bounds(addi, &lhs.ty));
-                        Value::Aggregate(vec![res, overflow])
+                        let (res, overflow) = lv.overflowing_add(rv);
+                        Value::Aggregate(vec![Value::Int(res), Value::Bool(overflow)])
                     },
                     _ => unimplemented!()
                 }
@@ -479,6 +477,14 @@ pub fn size_of<'tcx>(ty: Ty<'tcx>) -> usize {
             IntTy::I128 => 16,
             _ => unimplemented!(),
         },
+        TypeVariants::TyUint(uint_ty) => match uint_ty {
+            UintTy::U8 => 1,
+            UintTy::U16 => 2,
+            UintTy::U32 => 4,
+            UintTy::U64 => 8,
+            UintTy::U128 => 16,
+            _ => unimplemented!(),
+        },
         TypeVariants::TyBool => 1,
         TypeVariants::TyTuple(tys, ..) => {
             let mut size = 0;
@@ -498,20 +504,5 @@ pub fn entry_point<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     let m = machine::Memory::new(MEMORY_CAPACITY);
     let mut vm = Machine::new(m, tcx);
     vm.eval_fn_call(def_id, vec![], None, None);
-}
-
-fn in_bounds<'tcx>(val: u128, ty: Ty<'tcx>) -> bool {
-    match ty.sty {
-        TypeVariants::TyInt(int_ty) => {
-            match int_ty {
-                IntTy::I32 => {
-                    let val = val as i32;
-                    val >= <i32>::min_value() && val <= <i32>::max_value()
-                },
-                _ => unimplemented!()
-            }
-        },
-        _ => unimplemented!()
-    }
 }
 
