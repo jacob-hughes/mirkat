@@ -470,6 +470,14 @@ pub fn size_of<'tcx>(ty: Ty<'tcx>) -> usize {
             IntTy::I128 => 16,
             _ => unimplemented!(),
         },
+        TypeVariants::TyUint(uint_ty) => match uint_ty {
+            UintTy::U8 => 1,
+            UintTy::U16 => 2,
+            UintTy::U32 => 4,
+            UintTy::U64 => 8,
+            UintTy::U128 => 16,
+            _ => unimplemented!(),
+        },
         TypeVariants::TyBool => 1,
         TypeVariants::TyTuple(tys, ..) => {
             let mut size = 0;
