@@ -105,6 +105,14 @@ impl<'tcx> Value {
         }
     }
 
+    pub fn from_u128(val: u128, ty: Ty<'tcx>) -> Self {
+        match ty.sty {
+            TypeVariants::TyInt(..) => Value::Int(val),
+            TypeVariants::TyBool => Value::Bool(val == 1),
+            _ => unimplemented!()
+        }
+    }
+
     pub fn from_bytes(bytes: Vec<u8>, ty: Ty<'tcx>) -> Self {
         match ty.sty {
             TypeVariants::TyInt(int_ty) => match int_ty {
@@ -386,19 +394,11 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 let val: Value;
                 match constant.literal {
                     Literal::Value { ref value } => {
-                        match value.val {
-                            ConstVal::Integral(int) => {
-                                val = Value::Int(int.to_u128().unwrap())
-                            },
-                            ConstVal::Bool(b) => {
-                                val = Value::Bool(b)
-                            },
-                            ConstVal::Function(def_if, substs) => {
-                                val = Value::None
-                            }
-                            _ => unimplemented!("{:?}", value.val)
-                        }
-                    },
+                        val = match value.val.to_raw_bits() {
+                            Some(x) => Value::from_u128(x, ty),
+                            None => Value::None,
+                        };
+                    }
                     Literal::Promoted { index } => {
                         unimplemented!()
                     }
