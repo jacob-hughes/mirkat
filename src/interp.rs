@@ -113,6 +113,15 @@ impl<'tcx> Value {
         }
     }
 
+    pub fn to_u128(&self) -> u128 {
+        match *self {
+            Value::Int(i) => i,
+            Value::Bool(b) => b as u128,
+            Value::Ref(r) => r as u128,
+            _ => panic!("Can't convert aggregates to u128")
+        }
+    }
+
     pub fn from_bytes(bytes: Vec<u8>, ty: Ty<'tcx>) -> Self {
         match ty.sty {
             TypeVariants::TyInt(int_ty) => match int_ty {
@@ -229,8 +238,9 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 let val = self.eval_operand(operand).val;
                 self.store(val.to_bytes(dest_ty), dest);
             },
-            Rvalue::CheckedBinaryOp(binop, ref lhs, ref rhs) => {
-                // We assume that the lhs and rhs are of the same type
+            Rvalue::CheckedBinaryOp(binop, ref lhs, ref rhs) |
+            Rvalue::BinaryOp(binop, ref lhs, ref rhs) => {
+                // We later assert that the lhs and rhs are of the same type
                 let lhs = self.eval_operand(lhs);
                 let rhs = self.eval_operand(rhs);
                 let val = self.binary_op(binop, lhs, rhs);
@@ -281,7 +291,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                     _ => unimplemented!()
                 }
             },
-            _ => unimplemented!()
+            _ => unimplemented!("{:?}", binop)
         }
     }
 
@@ -351,7 +361,17 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 } else {
                     panic!("{:?}", msg);
                 }
-            }
+            },
+            TerminatorKind::SwitchInt {
+                ref discr,
+                ref switch_ty,
+                ref values,
+                ref targets
+            } => {
+                let d = self.eval_operand(discr).val.to_u128();
+                let idx = values.iter().position(|x| x == &d).unwrap_or_else(|| values.len());
+                self.eval_basic_block(targets[idx]);
+            },
             _ => unimplemented!("{:?}", terminator.kind)
         }
     }
