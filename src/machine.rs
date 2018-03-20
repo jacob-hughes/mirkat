@@ -33,6 +33,9 @@
 // DEALINGS IN THE SOFTWARE.
 
 use std::mem::align_of;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
+use std::rc::Rc;
 
 use rustc::hir::def_id::DefId;
 use rustc::mir::{Mir, Local, BasicBlock, Place};
@@ -41,15 +44,47 @@ use rustc_data_structures::indexed_vec::{Idx};
 
 use interp::{TyVal, size_of};
 
+/// Contains metadata that may be needed during the evaluation of a stack frame.
+/// This data is the same for all Frames of the same Function, therefore it is
+/// hoisted here and then referenced to in order to avoid duplication.
 #[derive(Debug)]
-pub struct Frame<'tcx> {
-    /// The unique identifier for the function definition being invoked by this
-    /// stackframe
+pub struct Function<'tcx> {
+    /// The unique identifier for the function definition
     pub def_id: DefId,
 
-    /// Each MIR is a CFG of a single function in Rust, so it makes sense to
-    /// store a reference to this in the frame.
+    /// Each MIR is a CFG of a single function in Rust
     pub mir: &'tcx Mir<'tcx>,
+
+    /// Acts as a lookup to a vars position in the contiguous
+    /// `locals` byte vector, where the index is the local id and the value is
+    /// the corresponding index into the `locals` field where the value's bytes
+    /// start.
+    locals_offsets: Vec<usize>,
+    locals_size: usize,
+}
+
+impl<'tcx> Function<'tcx> {
+    pub fn new(def_id: DefId, mir: &'tcx Mir<'tcx>) -> Self {
+        // Calculate local indexes
+        let mut locals_offsets: Vec<usize> = Vec::with_capacity(mir.local_decls.len());
+        let mut next_idx = 0;
+        for decl in mir.local_decls.iter() {
+            locals_offsets.push(next_idx);
+            next_idx += size_of(decl.ty);
+        }
+
+        Self {
+            def_id: def_id,
+            mir: mir,
+            locals_offsets: locals_offsets,
+            locals_size: next_idx
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Frame<'tcx> {
+    pub function: Rc<Function<'tcx>>,
 
     /// Address in memory where the return value should be stored.
     /// We do not name this Return Address to avoid confusion with the Return
@@ -62,32 +97,19 @@ pub struct Frame<'tcx> {
     /// return to any particular address.
     pub ret_block: Option<BasicBlock>,
 
-    /// This field serves as a lookup to a vars position in the contiguous
-    /// `locals` byte vector, where the index is the local id and the value is
-    /// the corresponding index into the `locals` field where the value's bytes
-    /// start.
-    ///
-    /// This should not be accessed directly.
-    idxs: Vec<usize>,
-
     /// An exact sized byte vector containing the frame local vars in their byte
-    /// representation. These values can change at runtime and this field should
-    /// not be accessed directly.
+    /// representation.
     locals: Vec<u8>,
 }
 
-impl<'tcx> Frame<'tcx> {
-    pub fn new(def_id: DefId,
-               mir: &'tcx Mir<'tcx>,
-               idxs: Vec<usize>,
+impl<'f, 'tcx> Frame<'tcx> {
+    pub fn new(function: Rc<Function<'tcx>>,
                locals: Vec<u8>,
                ret_val: Option<Address>,
                ret_block: Option<BasicBlock>)
-               -> Self {
-        Frame {
-            def_id: def_id,
-            mir: mir,
-            idxs: idxs,
+            -> Self {
+        Self {
+            function: function,
             locals: locals,
             ret_val: ret_val,
             ret_block: ret_block,
@@ -96,11 +118,11 @@ impl<'tcx> Frame<'tcx> {
 
     pub fn local_ptr(&self, local: Local) -> Ptr {
         let idx = local.index();
-        let start = self.idxs[idx];
-        let end = if idx + 1 < self.idxs.len() {
-            self.idxs[idx + 1]
+        let start = self.function.locals_offsets[idx];
+        let end = if idx + 1 < self.function.locals_offsets.len() {
+            self.function.locals_offsets[idx + 1]
         } else { // if it's the last local..
-            self.locals.len()
+            self.function.locals_size
         };
         let size = end - start;
         Ptr::new(start, size)
@@ -116,7 +138,6 @@ impl<'tcx> Frame<'tcx> {
         let end = ptr.addr + ptr.size;
         &self.locals[ptr.addr..end]
     }
-
 }
 
 /// Represents a pointer into some kind of memory.
@@ -205,27 +226,18 @@ impl Memory {
 /// instructions.
 pub struct Machine<'a, 'tcx: 'a> {
     stack: Vec<Frame<'tcx>>,
+    funcs: HashMap<DefId, Rc<Function<'tcx>>>,
     memory: Memory,
     pub tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
-impl<'a, 'tcx> Machine<'a, 'tcx> {
+impl<'a, 'tcx>  Machine<'a, 'tcx> {
     pub fn new(memory: Memory, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Machine<'a, 'tcx> {
-        Machine {
+        Self {
             stack: vec![],
+            funcs: HashMap::new(),
             memory: memory,
             tcx: tcx
-        }
-    }
-
-    /// Each MIR is specific to a function definition. So it will be necessary
-    /// for function invocations to call this to get the relevant mir reference.
-    pub fn load_mir(&self, instance: InstanceDef<'tcx>) -> &'tcx Mir<'tcx> {
-        match instance {
-            InstanceDef::Item(def_id) => {
-                self.tcx.maybe_optimized_mir(def_id).unwrap()
-            },
-            _ => self.tcx.instance_mir(instance),
         }
     }
 
@@ -237,32 +249,38 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         self.stack.last_mut().unwrap()
     }
 
+    /// Retrieves a Function reference for a DefId from the Machine's storage.
+    /// If it does not exist, the Function struct will be lazily instantiated
+    /// and inserted for future use.
+    pub fn get_or_insert_func(&mut self, def_id: DefId) -> &mut Rc<Function<'tcx>> {
+        self.funcs.entry(def_id).or_insert({
+            let instance = Instance::mono(self.tcx, def_id).def;
+            let mir = match instance {
+                InstanceDef::Item(def_id) => {
+                    self.tcx.maybe_optimized_mir(def_id).unwrap()
+                },
+                _ => self.tcx.instance_mir(instance),
+            };
+            Rc::new(Function::new(def_id, mir))
+        })
+    }
+
     pub fn push_frame(&mut self,
                       def_id: DefId,
                       args: Vec<TyVal<'tcx>>,
                       ret_val: Option<Address>,
-                      ret_block: Option<BasicBlock>){
-        let def = Instance::mono(self.tcx, def_id).def;
-        let mir = self.load_mir(def);
-
-        // Calculate local indexes
-        let mut local_idxs: Vec<usize> = Vec::with_capacity(mir.local_decls.len());
-        let mut next_idx = 0;
-        for decl in mir.local_decls.iter() {
-            local_idxs.push(next_idx);
-            next_idx += size_of(decl.ty);
-        }
-
+                      ret_block: Option<BasicBlock>) {
+        let func = self.get_or_insert_func(def_id).clone();
         // Init locals with args and zero the rest
-        let mut locals: Vec<u8> = vec![0; next_idx];
+        let mut locals: Vec<u8> = vec![0; func.locals_size];
         let args: Vec<u8> = args.into_iter().flat_map(|x| x.to_bytes()).collect();
         locals.splice(0..args.len(), args.into_iter());
 
-        let frame = Frame::new(def_id, mir, local_idxs, locals, ret_val, ret_block);
-        self.stack.push(frame)
+        let frame = Frame::new(func.clone(), locals, ret_val, ret_block);
+        self.stack.push(frame);
     }
 
-    pub fn pop_frame(&mut self) -> Frame<'tcx> {
+    pub fn pop_frame(&mut self) -> Frame {
         self.stack.pop()
             .expect("Popped from empty stack")
     }

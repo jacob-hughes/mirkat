@@ -196,6 +196,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     fn eval_basic_block(&mut self,
                         block: BasicBlock) {
         let basic_block_data = self.cur_frame()
+                               .function
                                .mir.basic_blocks()
                                .get(block)
                                .unwrap();
@@ -232,7 +233,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                    place: &Place<'tcx>,
                    rvalue: &Rvalue<'tcx>) {
         let dest = self.eval_place(place);
-        let ref dest_ty = place.ty(self.cur_frame().mir, self.tcx).to_ty(self.tcx);
+        let ref dest_ty = place.ty(self.cur_frame().function.mir, self.tcx).to_ty(self.tcx);
         match *rvalue {
             Rvalue::Use(ref operand) => {
                 let val = self.eval_operand(operand).val;
@@ -450,7 +451,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     }
 
     fn place_ty(&self, place: &Place<'tcx>) -> Ty<'tcx> {
-        place.ty(self.cur_frame().mir, self.tcx).to_ty(self.tcx)
+        place.ty(self.cur_frame().function.mir, self.tcx).to_ty(self.tcx)
     }
 
     /// An operand's value can always be determined without needing to temporarily
@@ -459,7 +460,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     fn eval_operand(&mut self,
                     operand: &Operand<'tcx>)
                     -> TyVal<'tcx> {
-        let ty = operand.ty(self.cur_frame().mir, self.tcx);
+        let ty = operand.ty(self.cur_frame().function.mir, self.tcx);
         match *operand {
             Operand::Copy(ref place) |
             Operand::Move(ref place) => {
