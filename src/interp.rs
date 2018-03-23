@@ -47,7 +47,7 @@ use rustc::mir::{
     Literal, BinOp, ProjectionElem
 };
 use rustc_data_structures::indexed_vec::Idx;
-use syntax::ast::IntTy;
+use syntax::ast::{IntTy, UintTy};
 
 use machine;
 use machine::{Machine, Address, Ptr};
@@ -110,6 +110,15 @@ impl<'tcx> Value {
             TypeVariants::TyInt(..) => Value::Int(val),
             TypeVariants::TyBool => Value::Bool(val == 1),
             _ => unimplemented!()
+        }
+    }
+
+    pub fn to_u128(&self) -> u128 {
+        match *self {
+            Value::Int(i) => i,
+            Value::Bool(b) => b as u128,
+            Value::Ref(r) => r as u128,
+            _ => panic!("Can't convert aggregates to u128")
         }
     }
 
@@ -187,6 +196,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     fn eval_basic_block(&mut self,
                         block: BasicBlock) {
         let basic_block_data = self.cur_frame()
+                               .function
                                .mir.basic_blocks()
                                .get(block)
                                .unwrap();
@@ -223,10 +233,18 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                    place: &Place<'tcx>,
                    rvalue: &Rvalue<'tcx>) {
         let dest = self.eval_place(place);
-        let ref dest_ty = place.ty(self.cur_frame().mir, self.tcx).to_ty(self.tcx);
+        let ref dest_ty = place.ty(self.cur_frame().function.mir, self.tcx).to_ty(self.tcx);
         match *rvalue {
             Rvalue::Use(ref operand) => {
                 let val = self.eval_operand(operand).val;
+                self.store(val.to_bytes(dest_ty), dest);
+            },
+            Rvalue::CheckedBinaryOp(binop, ref lhs, ref rhs) |
+            Rvalue::BinaryOp(binop, ref lhs, ref rhs) => {
+                // We later assert that the lhs and rhs are of the same type
+                let lhs = self.eval_operand(lhs);
+                let rhs = self.eval_operand(rhs);
+                let val = self.binary_op(binop, lhs, rhs);
                 self.store(val.to_bytes(dest_ty), dest);
             },
             Rvalue::Aggregate(ref kind, ref ops) => {
@@ -245,7 +263,36 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                     _ => unimplemented!()
                 }
             },
-            _ => unimplemented!()
+            _ => unimplemented!("{:?}", rvalue)
+        }
+    }
+
+    fn binary_op(&self,
+                 binop: BinOp,
+                 lhs: TyVal<'tcx>,
+                 rhs: TyVal<'tcx>)
+                 -> Value {
+        match binop {
+            BinOp::Add => {
+                match (lhs.val, rhs.val) {
+                    (Value::Int(lv), Value::Int(rv)) => {
+                        assert_eq!(lhs.ty, rhs.ty);
+                        let (res, overflow) = lv.overflowing_add(rv);
+                        Value::Aggregate(vec![Value::Int(res), Value::Bool(overflow)])
+                    },
+                    _ => unimplemented!()
+                }
+            },
+            BinOp::Eq => {
+                match (lhs.val, rhs.val) {
+                    (Value::Int(lv), Value::Int(rv)) => {
+                        assert_eq!(lhs.ty, rhs.ty);
+                        Value::Bool(lv == rv)
+                    },
+                    _ => unimplemented!()
+                }
+            },
+            _ => unimplemented!("{:?}", binop)
         }
     }
 
@@ -296,8 +343,37 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                     .map(|arg| self.eval_operand(arg))
                     .collect();
                 self.eval_fn_call(fn_def.def_id(), args, ret_val, ret_block)
-            }
-            _ => unimplemented!()
+            },
+            TerminatorKind::Assert {
+                ref cond,
+                expected,
+                ref msg,
+                target,
+                ref cleanup
+            } => {
+                let cond = self.eval_operand(cond).val;
+                let cond_val = match cond {
+                    Value::Bool(b) => b,
+                    _ => panic!("Mismatched type")
+                };
+
+                if cond_val == expected {
+                    self.eval_basic_block(target);
+                } else {
+                    panic!("{:?}", msg);
+                }
+            },
+            TerminatorKind::SwitchInt {
+                ref discr,
+                ref switch_ty,
+                ref values,
+                ref targets
+            } => {
+                let d = self.eval_operand(discr).val.to_u128();
+                let idx = values.iter().position(|x| x == &d).unwrap_or_else(|| values.len());
+                self.eval_basic_block(targets[idx]);
+            },
+            _ => unimplemented!("{:?}", terminator.kind)
         }
     }
 
@@ -375,7 +451,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     }
 
     fn place_ty(&self, place: &Place<'tcx>) -> Ty<'tcx> {
-        place.ty(self.cur_frame().mir, self.tcx).to_ty(self.tcx)
+        place.ty(self.cur_frame().function.mir, self.tcx).to_ty(self.tcx)
     }
 
     /// An operand's value can always be determined without needing to temporarily
@@ -384,7 +460,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     fn eval_operand(&mut self,
                     operand: &Operand<'tcx>)
                     -> TyVal<'tcx> {
-        let ty = operand.ty(self.cur_frame().mir, self.tcx);
+        let ty = operand.ty(self.cur_frame().function.mir, self.tcx);
         match *operand {
             Operand::Copy(ref place) |
             Operand::Move(ref place) => {
@@ -420,6 +496,14 @@ pub fn size_of<'tcx>(ty: Ty<'tcx>) -> usize {
             IntTy::I32 => 4,
             IntTy::I64 => 8,
             IntTy::I128 => 16,
+            _ => unimplemented!(),
+        },
+        TypeVariants::TyUint(uint_ty) => match uint_ty {
+            UintTy::U8 => 1,
+            UintTy::U16 => 2,
+            UintTy::U32 => 4,
+            UintTy::U64 => 8,
+            UintTy::U128 => 16,
             _ => unimplemented!(),
         },
         TypeVariants::TyBool => 1,
