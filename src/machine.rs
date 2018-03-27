@@ -38,7 +38,7 @@ use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::rc::Rc;
 
 use rustc::hir::def_id::DefId;
-use rustc::mir::{Mir, Local, BasicBlock, Place};
+use rustc::mir::{Mir, Local, BasicBlock, Place, START_BLOCK};
 use rustc::ty::{TyCtxt, Instance, InstanceDef};
 use rustc_data_structures::indexed_vec::{Idx};
 

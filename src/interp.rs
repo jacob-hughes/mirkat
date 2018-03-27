@@ -180,21 +180,10 @@ impl<'tcx> TyVal<'tcx> {
 }
 
 impl<'a, 'tcx> Machine<'a, 'tcx> {
-    /// Evaluates a function call, pushing a new stack frame.
-    pub fn eval_fn_call(&mut self,
-                        def_id: DefId,
-                        args: Vec<TyVal<'tcx>>,
-                        ret_val: Option<Address>,
-                        ret_block: Option<BasicBlock>) {
-        self.push_frame(def_id, args, ret_val, ret_block);
-        self.eval_basic_block(START_BLOCK)
-    }
-
     /// The easy bit. `BasicBlock`s are a list of instructions which are guaranteed to
     /// always be executed sequentially. We just need to iterate over the statement
     /// list and execute each one in order.
-    fn eval_basic_block(&mut self,
-                        block: BasicBlock) {
+    fn eval_block(&mut self, block: BasicBlock) -> Option<BasicBlock> {
         let basic_block_data = self.cur_frame()
                                .function
                                .mir.basic_blocks()
@@ -205,7 +194,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
         }
 
         let term = basic_block_data.terminator();
-        self.eval_terminator(term);
+        self.eval_terminator(term)
     }
 
     fn eval_statement(&mut self,
@@ -300,21 +289,15 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
     /// flow. A `Terminator` determines the next `BasicBlock` that should be jumped to
     /// during execution.
     fn eval_terminator(&mut self,
-                       terminator: &Terminator<'tcx>) {
+                       terminator: &Terminator<'tcx>)
+                       -> Option<BasicBlock> {
         match terminator.kind {
-            TerminatorKind::Goto { target } => {
-                self.eval_basic_block(target)
-            }
+            TerminatorKind::Goto { target } => Some(target),
             TerminatorKind::Return =>  {
                 // Move the ret_block, otherwise we borrow twice.
                 let ret_block = self.cur_frame().ret_block;
                 self.pop_frame();
-                match ret_block {
-                    Some(bb) => {
-                        self.eval_basic_block(bb)
-                    },
-                    None => exit(0),
-                }
+                ret_block
             },
             TerminatorKind::Call {
                 ref func,
@@ -342,7 +325,8 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 let args: Vec<TyVal> = args.iter()
                     .map(|arg| self.eval_operand(arg))
                     .collect();
-                self.eval_fn_call(fn_def.def_id(), args, ret_val, ret_block)
+                self.push_frame(fn_def.def_id(), args, ret_val, ret_block);
+                Some(START_BLOCK)
             },
             TerminatorKind::Assert {
                 ref cond,
@@ -358,7 +342,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
                 };
 
                 if cond_val == expected {
-                    self.eval_basic_block(target);
+                    Some(target)
                 } else {
                     panic!("{:?}", msg);
                 }
@@ -371,7 +355,7 @@ impl<'a, 'tcx> Machine<'a, 'tcx> {
             } => {
                 let d = self.eval_operand(discr).val.to_u128();
                 let idx = values.iter().position(|x| x == &d).unwrap_or_else(|| values.len());
-                self.eval_basic_block(targets[idx]);
+                Some(targets[idx])
             },
             _ => unimplemented!("{:?}", terminator.kind)
         }
@@ -524,6 +508,10 @@ pub fn entry_point<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                              def_id: DefId) {
     let m = machine::Memory::new(MEMORY_CAPACITY);
     let mut vm = Machine::new(m, tcx);
-    vm.eval_fn_call(def_id, vec![], None, None);
+    vm.push_frame(def_id, vec![], None, None);
+    let mut next_block = Some(START_BLOCK);
+    while next_block.is_some() {
+        next_block = vm.eval_block(next_block.unwrap());
+    }
 }
 
